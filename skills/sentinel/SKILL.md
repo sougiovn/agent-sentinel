@@ -36,7 +36,8 @@ If the daemon isn't running, `sentinel watch` starts it.
 | `sentinel unwatch <pr>` | Stop watching a PR |
 | `sentinel check [<pr>]` | Poll now instead of waiting for the interval |
 | `sentinel status` | Daemon status |
-| `sentinel tui` | Interactive dashboard (for the user) |
+| `sentinel` | Interactive dashboard (for the user; don't run it from an agent) |
+| `sentinel start` | Start the daemon in the background |
 
 ## When Sentinel resumes you
 

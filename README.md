@@ -19,8 +19,8 @@ Requires `gh` (authenticated), `claude`, and `rex` or `herdr` on `PATH`. `mise` 
 ## Usage
 
 ```sh
-sentinel                     # start the daemon (no-op if running)
-sentinel tui                 # dashboard
+sentinel                     # open the dashboard (starts the daemon if needed)
+sentinel start               # start the daemon in the background, no dashboard
 sentinel watch <pr>...       # from inside an agent session: hand off PRs
 sentinel list | status | check [<pr>] | unwatch <pr> | reload | stop
 ```
@@ -29,7 +29,7 @@ sentinel list | status | check [<pr>] | unwatch <pr> | reload | stop
 
 ### TUI keys
 
-`↑/↓` select · `enter` event history · `c` check now · `d` unwatch · `p` pause/resume the session's deliveries · `s` settings · `r` reload config · `S` start daemon · `q` quit.
+`↑/↓` select · `enter` event history · `c` check now · `d` unwatch · `p` pause/resume the session's deliveries · `s` settings · `r` reload config · `S` retry starting the daemon · `q` quit. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`.
 In settings: `enter` edits a field or cycles an enum, and `e` opens the fix prompt template in `$EDITOR`.
 
 ## How it works

@@ -1,13 +1,14 @@
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, saveConfig, type Config } from "../core/config.ts";
-import { ensureHome, selfCommand, type Paths } from "../core/paths.ts";
+import type { Paths } from "../core/paths.ts";
 import type { EventRow } from "../core/types.ts";
 import type { PrListEntry, StatusInfo } from "../daemon/protocol.ts";
 import { Client } from "../cli/client.ts";
+import { startDaemon as startDaemonProcess } from "../cli/daemon-control.ts";
 import { ago } from "../cli/format.ts";
 import { cycleEnum, displayValue, editText, FIELDS, parseValue } from "./settings.ts";
 
@@ -27,7 +28,15 @@ function pad(s: string, n: number) {
   return s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s.padEnd(n);
 }
 
-export function App(props: { paths: Paths }) {
+export interface AppProps {
+  paths: Paths;
+  /** Start the daemon on launch if it isn't running (default true). */
+  autoStart?: boolean;
+  /** Override how the daemon is started (tests). Resolves true if it was started. */
+  start?: () => Promise<boolean>;
+}
+
+export function App(props: AppProps) {
   const client = new Client(props.paths.socket);
   const renderer = useRenderer();
   const dims = useTerminalDimensions();
@@ -104,17 +113,21 @@ export function App(props: { paths: Paths }) {
 
   const current = () => prs()[sel()];
 
+  const [starting, setStarting] = createSignal(false);
   const startDaemon = async () => {
-    ensureHome(props.paths);
-    const [cmd, ...args] = selfCommand();
-    spawn(cmd!, [...args, "daemon", "--quiet"], { detached: true, stdio: "ignore" }).unref();
-    notify("Starting daemon…");
-    for (let i = 0; i < 30; i++) {
-      await Bun.sleep(150);
-      if (await client.alive()) break;
+    if (starting()) return;
+    setStarting(true);
+    try {
+      const started = await (props.start ?? (() => startDaemonProcess(props.paths, client)))();
+      if (started) notify("Daemon started");
+    } catch (e) {
+      notify(`Could not start daemon: ${(e as Error).message}`, true);
+    } finally {
+      setStarting(false);
+      await refresh();
     }
-    await refresh();
   };
+  if (props.autoStart !== false) void startDaemon();
 
   const openHistory = async () => {
     const pr = current();
@@ -305,7 +318,9 @@ export function App(props: { paths: Paths }) {
 
       <Show when={!online()}>
         <box border borderColor="#e67e22" padding={1} marginTop={1}>
-          <text fg="#e67e22">Sentinel daemon is not running. Press S (shift+s) to start it.</text>
+          <text fg="#e67e22">
+            {starting() ? "Starting Sentinel daemon…" : "Sentinel daemon is not running. Press S (shift+s) to start it."}
+          </text>
         </box>
       </Show>
       <Show when={status()?.configError || configError()}>

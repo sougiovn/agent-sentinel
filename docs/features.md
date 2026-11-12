@@ -176,7 +176,8 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 
 ## The daemon
 
-- `sentinel` with no arguments starts the daemon in the background as a detached `sentinel daemon --quiet` process, waits up to 5 seconds for it to answer, and prints its status. If it's already running, it just prints the status.
+- `sentinel start` starts the daemon in the background as a detached `sentinel daemon --quiet` process, waits up to 5 seconds for it to answer, and prints its status. If it's already running, it just prints the status. `sentinel` (the dashboard) and `sentinel watch` start it the same way when it isn't running.
+- The daemon is independent of the dashboard: quitting the TUI leaves it running.
 - `sentinel daemon` runs it in the foreground and logs to stderr as well as `sentinel.log`. Startup failures are written to the log too.
 - **Single instance:** a second daemon refuses to start while one is answering on the socket. A leftover socket file from a crashed daemon is removed on start.
 - **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `history`, `signal`, `pause`, `reload`, `stop`. The daemon is the only process that writes to SQLite.
@@ -187,8 +188,8 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 
 | Command | Description |
 | --- | --- |
-| `sentinel` | Start the daemon if needed and print its status |
-| `sentinel tui` | Open the dashboard |
+| `sentinel` | Open the dashboard, starting the daemon if it isn't running (`sentinel tui` is an alias) |
+| `sentinel start` | Start the daemon in the background without the dashboard, and print its status |
 | `sentinel watch <pr>...` | Hand off PRs (see [Handing off PRs](#handing-off-prs)) |
 | `sentinel unwatch <pr>` | Stop watching a PR and delete its data |
 | `sentinel list [--json]` | Table of watched PRs: ID, agent, session, last check, status, reason |
@@ -201,11 +202,11 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel daemon [--quiet]` | Run the daemon in the foreground |
 | `sentinel hook idle\|busy\|exit` | Used by agent hooks; not meant to be run by hand |
 
-`unwatch`, `list`, `check`, `status` and `reload` need a running daemon and fail with "Sentinel daemon is not running" otherwise. `watch` and the bare `sentinel` start it when needed.
+`unwatch`, `list`, `check`, `status` and `reload` need a running daemon and fail with "Sentinel daemon is not running" otherwise. `sentinel`, `sentinel start` and `watch` start it when needed.
 
 ## TUI
 
-`sentinel tui` (`src/tui/app.tsx`) refreshes from the daemon every 2 seconds.
+`sentinel` (`src/tui/app.tsx`) opens the dashboard. If the daemon isn't running, the TUI starts it on launch, then refreshes from it every 2 seconds.
 
 **Main view:**
 - **Header:** multiplexer, poll interval and countdown to the next poll.
@@ -221,10 +222,10 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `p` | Pause or resume deliveries to the PR's agent session |
 | `s` | Settings |
 | `r` | Reload config in the TUI and the daemon |
-| `S` | Start the daemon (when it's offline) |
+| `S` | Retry starting the daemon (when it's offline) |
 | `q` / `Ctrl+C` | Quit |
 
-- **Daemon offline:** if the daemon isn't running, the TUI says so and offers `S` to start it.
+- **Daemon offline:** while the daemon is starting, the TUI shows "Starting Sentinel daemon…". If it fails to start or stops later, the TUI shows the error and offers `S` to try again.
 - **Config errors:** an invalid config file, or a daemon running on its last good config, is shown in a red banner.
 - **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`.
 

@@ -1,22 +1,22 @@
 #!/usr/bin/env bun
-import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import skillText from "../../skills/sentinel/SKILL.md" with { type: "text" };
-import { ensureHome, getPaths, selfCommand, type Paths } from "../core/paths.ts";
+import { ensureHome, getPaths } from "../core/paths.ts";
 import type { AgentKind } from "../core/types.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
 import { Client, DaemonUnavailableError } from "./client.ts";
+import { startDaemon } from "./daemon-control.ts";
 import { detectAgent, hookSessionId } from "./detect.ts";
 import { formatList, formatStatus } from "./format.ts";
 
 const HELP = `sentinel — watches PRs for AI agent sessions and resumes them to fix feedback
 
 Usage:
-  sentinel                      Start the background daemon (no-op if running)
-  sentinel tui                  Open the dashboard
+  sentinel                      Open the dashboard (starts the daemon if needed)
+  sentinel start                Start the background daemon without the dashboard
   sentinel watch <pr>...        Hand off PRs (agent/session/cwd auto-detected)
       --agent claude|codex  --session <id>  --cwd <dir>  --include-existing
   sentinel unwatch <pr>         Stop watching a PR
@@ -35,30 +35,19 @@ function die(msg: string, code = 1): never {
   process.exit(code);
 }
 
-async function startDaemon(paths: Paths, client: Client): Promise<boolean> {
-  if (await client.alive()) return false;
-  ensureHome(paths);
-  const [cmd, ...args] = selfCommand();
-  const child = spawn(cmd!, [...args, "daemon", "--quiet"], { detached: true, stdio: "ignore", env: process.env });
-  child.unref();
-  for (let i = 0; i < 50; i++) {
-    await Bun.sleep(100);
-    if (await client.alive()) return true;
-  }
-  die(`daemon did not start; see ${paths.log}`);
-}
-
-async function ensureDaemon(paths: Paths, client: Client) {
-  if (!(await client.alive())) await startDaemon(paths, client);
-}
-
 async function main(argv: string[]) {
   const paths = getPaths();
   const client = new Client(paths.socket);
   const [cmd, ...rest] = argv;
 
   switch (cmd) {
-    case undefined: {
+    case undefined:
+    case "tui": {
+      const { runTui } = await import("../tui/app.tsx");
+      await runTui(paths);
+      return;
+    }
+    case "start": {
       const started = await startDaemon(paths, client);
       const st = await client.call("status", {});
       console.log(started ? "Sentinel daemon started." : "Sentinel daemon already running.");
@@ -86,11 +75,6 @@ async function main(argv: string[]) {
       for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => d.stop());
       return;
     }
-    case "tui": {
-      const { runTui } = await import("../tui/app.tsx");
-      await runTui(paths);
-      return;
-    }
     case "watch": {
       const { values, positionals } = parseArgs({
         args: rest,
@@ -108,7 +92,7 @@ async function main(argv: string[]) {
       const sessionId = values.session ?? det.sessionId;
       if (agent !== "claude" && agent !== "codex") die("could not detect agent; pass --agent claude|codex");
       if (!sessionId) die("could not detect session id; pass --session <id>");
-      await ensureDaemon(paths, client);
+      await startDaemon(paths, client);
       const results = await client.call("watch", {
         prs: positionals,
         agent,
