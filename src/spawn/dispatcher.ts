@@ -3,7 +3,7 @@ import type { Store } from "../core/db.ts";
 import type { Paths } from "../core/paths.ts";
 import { fromPrId } from "../core/pr-ref.ts";
 import type { Item, SessionRow } from "../core/types.ts";
-import { renderFixPrompt, type FixGroup } from "../evaluator/prompt.ts";
+import { renderFixPrompt, rexNamingNote, type FixGroup } from "../evaluator/prompt.ts";
 import type { Multiplexer } from "../mux/mux.ts";
 import { injectionLine, launchCommand, writePromptFile, type HookSignal } from "./launcher.ts";
 
@@ -157,7 +157,8 @@ export class Dispatcher {
     const mux = this.d.mux();
     try {
       await mux.ensureAvailable();
-      const promptFile = writePromptFile(this.d.paths, sessionId, text, now);
+      const prompt = mux.name === "rex" ? `${text}\n\n${rexNamingNote(cfg.spawn.layout)}` : text;
+      const promptFile = writePromptFile(this.d.paths, sessionId, prompt, now);
       let paneId = session.pane_id && session.mux === mux.name ? session.pane_id : null;
       if (paneId && !(await mux.paneExists(paneId))) paneId = null;
 

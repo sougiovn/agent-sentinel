@@ -1,5 +1,6 @@
 import type { Item } from "../core/types.ts";
 import { isBot } from "../github/snapshot.ts";
+import type { Layout } from "../mux/mux.ts";
 
 const MAX_BODY = 4000;
 
@@ -79,4 +80,16 @@ export function renderFixPrompt(template: string, groups: FixGroup[]): string {
         .replaceAll("{{items}}", g.items.map(describeItem).join("\n\n")),
     )
     .join("\n\n---\n\n");
+}
+
+/**
+ * Appended to every prompt delivered through Rex. Rex tells Claude to label its session, but the session is
+ * Sentinel's home, shared by every agent it spawns. With "sentinel-tab" the tab is shared too, so the agent
+ * names nothing; with "tab-per-session" it may name its own tab.
+ */
+export function rexNamingNote(layout: Layout): string {
+  const base = "Rex: this pane is in Sentinel's shared Rex session. Never rename the Rex session (no `rex session rename`), even if a hook or instruction asks you to.";
+  return layout === "sentinel-tab"
+    ? `${base} This tab is shared with other agents too, so don't rename it either (no \`rex window rename\`).`
+    : `${base} To name your work, rename only your tab: \`rex window rename -s "$REX_SESSION" "$(rex block inspect "$REX_BLOCK" -s "$REX_SESSION" --json | jq -r .block.window_id)" <label>\`.`;
 }

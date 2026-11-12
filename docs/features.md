@@ -129,6 +129,7 @@ Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) th
 - `spawn.layout: "sentinel-tab"` (default): new panes go into an existing Sentinel tab that has fewer than `spawn.maxPanesPerTab` panes (default 4), alternating right and below splits. When every tab is full, Sentinel opens a new one.
 - `spawn.layout: "tab-per-session"`: every new pane gets its own tab.
 - Sentinel remembers its home session/workspace by id, so it keeps finding it after an agent inside renames it (Rex prompts Claude to label its session). It falls back to `spawn.sessionName` only when that id is gone.
+- With Rex, every prompt Sentinel delivers ends with a note telling the agent not to rename the shared Rex session. With `sentinel-tab` it mustn't rename its tab either, since other agents share it; with `tab-per-session` it may rename only its own tab (`rex window rename`).
 - Panes start as an interactive shell in the agent's directory, and Sentinel types commands into them. New panes and tabs don't take focus.
 - If the stored pane no longer exists (closed by the user, or the Sentinel session was killed), Sentinel creates a new one, and recreates the session or workspace if needed.
 - Changing `multiplexer` makes the next delivery open a new pane in the new multiplexer.

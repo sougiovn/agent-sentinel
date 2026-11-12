@@ -9,7 +9,7 @@ import { prGroup, prLabel, prLine, sortByGroup } from "../src/cli/format.ts";
 import { DaemonUnavailableError, type Client } from "../src/cli/client.ts";
 import { stopDaemon } from "../src/cli/daemon-control.ts";
 import { evaluatorArgs, scrubbedAgentEnv } from "../src/evaluator/evaluator.ts";
-import { renderFixPrompt } from "../src/evaluator/prompt.ts";
+import { renderFixPrompt, rexNamingNote } from "../src/evaluator/prompt.ts";
 import { newItems, normalize } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq } from "../src/spawn/launcher.ts";
 import { getPaths } from "../src/core/paths.ts";
@@ -505,5 +505,13 @@ describe("rex mux", () => {
     const again = await mux.createPane(opts({ homeId: "session:gone" }));
     expect(rex.sessions).toHaveLength(1);
     expect(again.homeId).toBe(first.homeId);
+  });
+});
+
+describe("rex naming note", () => {
+  test("sentinel-tab forbids renaming the tab; tab-per-session allows it", () => {
+    expect(rexNamingNote("sentinel-tab")).toContain("don't rename it either");
+    expect(rexNamingNote("sentinel-tab")).not.toContain("rename only your tab");
+    expect(rexNamingNote("tab-per-session")).toContain("rename only your tab");
   });
 });

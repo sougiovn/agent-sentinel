@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { parsePrRef } from "../src/core/pr-ref.ts";
 import { join } from "node:path";
@@ -63,6 +64,10 @@ describe("poll → evaluate → spawn", () => {
     const [line] = t.mux.allLines();
     expect(line).toContain("--resume 'sess-1'");
     expect(line).toStartWith("cd '/repo'");
+    const promptFile = /\$\(cat '([^']+)'\)/.exec(line!)![1]!;
+    const prompt = readFileSync(promptFile, "utf8");
+    expect(prompt).toContain("Never rename the Rex session");
+    expect(prompt).toContain("don't rename it either"); // default sentinel-tab layout shares the tab
     const s = t.store.getSession("sess-1")!;
     expect(s.state).toBe("busy");
     expect(t.store.getPr(ID)!.last_status).toBe("fix_running");
