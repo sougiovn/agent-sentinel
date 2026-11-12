@@ -2,7 +2,7 @@
 
 A background daemon that watches GitHub PRs handed off by AI agent sessions (Claude Code, Codex). It polls for new review comments and failing checks, asks a cheap Claude model whether they need work, and resumes the original agent session in your multiplexer ([Rex](https://www.superlogical.com/rex/docs/automate/cli) or [Herdr](https://herdr.dev/)) to fix them.
 
-See [SPEC.md](SPEC.md) for the original requirements.
+See [docs/features.md](docs/features.md) for a full description of what's implemented and how each part behaves, and [SPEC.md](SPEC.md) for the original requirements.
 
 ## Install
 
