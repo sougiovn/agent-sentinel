@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import type { AgentKind, EventRow, Item, PrRow, PrStatus, SessionRow } from "./types.ts";
+import type { AgentKind, EventRow, Item, PrRow, PrStatus, SessionOptions, SessionRow } from "./types.ts";
 
 const MIGRATIONS: string[] = [
   `
@@ -51,6 +51,11 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX events_pr ON events(pr_id, id);
   `,
+  `
+  ALTER TABLE sessions ADD COLUMN model TEXT;
+  ALTER TABLE sessions ADD COLUMN effort TEXT;
+  ALTER TABLE sessions ADD COLUMN started INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 export const EVENTS_PER_PR = 50;
@@ -92,7 +97,15 @@ export class Store {
   // ---- PRs ----
 
   /** Inserts or replaces the owner of a PR. Returns true if the PR is new. */
-  upsertPr(p: { id: string; url: string; agent: AgentKind; sessionId: string; cwd: string; now: number }): boolean {
+  upsertPr(p: {
+    id: string;
+    url: string;
+    agent: AgentKind;
+    sessionId: string;
+    cwd: string;
+    now: number;
+    session?: SessionOptions;
+  }): boolean {
     const existing = this.getPr(p.id);
     if (existing) {
       this.db
@@ -106,7 +119,7 @@ export class Store {
         )
         .run({ id: p.id, url: p.url, agent: p.agent, sid: p.sessionId, cwd: p.cwd, now: p.now });
     }
-    this.ensureSession(p.sessionId, p.agent, p.cwd);
+    this.ensureSession(p.sessionId, p.agent, p.cwd, p.session);
     this.pruneSessions();
     return !existing;
   }
@@ -192,13 +205,15 @@ export class Store {
 
   // ---- sessions ----
 
-  ensureSession(sessionId: string, agent: AgentKind, cwd: string) {
+  /** Creates or updates a session. Model and effort are only touched when `opts` is given. */
+  ensureSession(sessionId: string, agent: AgentKind, cwd: string, opts?: SessionOptions) {
     this.db
       .query(
-        `INSERT INTO sessions (session_id, agent, cwd) VALUES ($s, $a, $c)
+        `INSERT INTO sessions (session_id, agent, cwd, started) VALUES ($s, $a, $c, $st)
          ON CONFLICT(session_id) DO UPDATE SET agent = $a, cwd = $c`,
       )
-      .run({ s: sessionId, a: agent, c: cwd });
+      .run({ s: sessionId, a: agent, c: cwd, st: opts?.started === false ? 0 : 1 });
+    if (opts) this.updateSession(sessionId, { model: opts.model ?? null, effort: opts.effort ?? null });
   }
 
   getSession(sessionId: string): SessionRow | null {

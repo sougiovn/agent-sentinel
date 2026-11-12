@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "../core/config.ts";
+import { AGENT_DEFAULT, type Config } from "../core/config.ts";
 import type { Paths } from "../core/paths.ts";
 import type { AgentKind } from "../core/types.ts";
 
@@ -40,9 +40,27 @@ export interface LaunchSpec {
   sessionId: string;
   cwd: string;
   promptFile: string;
+  /** Start a session with this id instead of resuming one (claude only). */
+  newSession?: boolean;
+  model?: string | null;
+  effort?: string | null;
 }
 
-/** Shell command line that resumes the agent session with the prompt file's contents. */
+/** Model/effort flags; null or "default" leaves the agent's own default in place. */
+function modelArgs(spec: LaunchSpec): string[] {
+  const set = (v: string | null | undefined): v is string => !!v && v !== AGENT_DEFAULT;
+  const out: string[] = [];
+  if (spec.agent === "claude") {
+    if (set(spec.model)) out.push("--model", spec.model);
+    if (set(spec.effort)) out.push("--effort", spec.effort);
+  } else {
+    if (set(spec.model)) out.push("-m", spec.model);
+    if (set(spec.effort)) out.push("-c", `model_reasoning_effort=${JSON.stringify(spec.effort)}`);
+  }
+  return out;
+}
+
+/** Shell command line that starts or resumes the agent session with the prompt file's contents. */
 export function launchCommand(spec: LaunchSpec, config: Config, paths: Paths, self: string[]): string {
   const prompt = `"$(cat ${sq(spec.promptFile)})"`;
   if (spec.agent === "claude") {
@@ -53,16 +71,18 @@ export function launchCommand(spec: LaunchSpec, config: Config, paths: Paths, se
       sq(spec.cwd),
       "&&",
       sq(a.command),
-      "--resume",
+      spec.newSession ? "--session-id" : "--resume",
       sq(spec.sessionId),
       "--settings",
       sq(settings),
       "--add-dir",
       sq(paths.promptsDir),
+      ...modelArgs(spec).map(sq),
       ...a.args.map(sq),
       prompt,
     ].join(" ");
   }
+  if (spec.newSession) throw new Error("Sentinel can only start new sessions for claude");
   const a = config.agents.codex;
   return [
     "cd",
@@ -71,6 +91,7 @@ export function launchCommand(spec: LaunchSpec, config: Config, paths: Paths, se
     sq(a.command),
     "resume",
     ...codexHookOverrides(self).map(sq),
+    ...modelArgs(spec).map(sq),
     ...a.args.map(sq),
     sq(spec.sessionId),
     prompt,

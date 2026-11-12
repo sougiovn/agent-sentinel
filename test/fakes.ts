@@ -5,15 +5,38 @@ import { getPaths } from "../src/core/paths.ts";
 import type { PrRef } from "../src/core/pr-ref.ts";
 import { prId } from "../src/core/pr-ref.ts";
 import { Daemon } from "../src/daemon/daemon.ts";
+import type { Exec } from "../src/core/exec.ts";
 import type { EvalInput } from "../src/evaluator/prompt.ts";
 import type { Evaluator, Verdict } from "../src/evaluator/evaluator.ts";
-import type { GhClient, GhComment, GhCheck, GhPrView, PrActivity } from "../src/github/gh.ts";
+import type { GhClient, GhComment, GhCheck, GhPrView, ListPrsOptions, PrActivity, PrSummary } from "../src/github/gh.ts";
 import { MuxUnavailableError, type CreatePaneOptions, type Multiplexer, type PaneRef } from "../src/mux/mux.ts";
 
 export class FakeGh implements GhClient {
   prs = new Map<string, PrActivity>();
   login = "me";
   failNext = false;
+  /** PRs returned by listMyPrs, keyed by whether they were authored by the viewer. */
+  searchable: { summary: PrSummary; mine: boolean }[] = [];
+  listCalls: ListPrsOptions[] = [];
+
+  /** Adds a PR to both the activity map and the search results. */
+  addSearchable(ref: PrRef, title: string, opts: { mine?: boolean; isDraft?: boolean; updatedAt?: string } = {}) {
+    this.add(ref, { title });
+    this.searchable.push({
+      summary: {
+        ref,
+        title,
+        url: `https://${ref.host}/${ref.owner}/${ref.repo}/pull/${ref.number}`,
+        isDraft: opts.isDraft ?? false,
+        updatedAt: opts.updatedAt ?? "2026-01-01T00:00:00Z",
+      },
+      mine: opts.mine ?? true,
+    });
+  }
+  async listMyPrs(opts: ListPrsOptions) {
+    this.listCalls.push(opts);
+    return this.searchable.filter((s) => !opts.onlyMine || s.mine).map((s) => structuredClone(s.summary));
+  }
 
   add(ref: PrRef, patch: Partial<GhPrView> = {}) {
     this.prs.set(prId(ref), {
@@ -93,12 +116,30 @@ export class FakeMux implements Multiplexer {
   }
 }
 
-export function makeDaemon(opts: { now?: () => number } = {}) {
+/** git stand-in: every repo has the origin in `origins` (keyed by directory), anything else fails. */
+export function fakeGit(origins: Record<string, string> = {}): Exec {
+  return async (cmd) => {
+    const dir = cmd[2]!;
+    if (cmd.includes("rev-parse")) return { code: dir in origins ? 0 : 128, stdout: "true\n", stderr: "" };
+    const o = origins[dir];
+    return o ? { code: 0, stdout: `${o}\n`, stderr: "" } : { code: 2, stdout: "", stderr: "no origin" };
+  };
+}
+
+export function makeDaemon(opts: { now?: () => number; exec?: Exec } = {}) {
   const home = mkdtempSync(join(tmpdir(), "sentinel-test-"));
   const paths = getPaths(home);
   const gh = new FakeGh();
   const evaluator = new FakeEvaluator();
   const mux = new FakeMux();
-  const daemon = new Daemon(paths, { gh, evaluator, muxFactory: () => mux, noTimer: true, quiet: true, now: opts.now });
+  const daemon = new Daemon(paths, {
+    gh,
+    evaluator,
+    muxFactory: () => mux,
+    noTimer: true,
+    quiet: true,
+    now: opts.now,
+    exec: opts.exec ?? fakeGit(),
+  });
   return { daemon, gh, evaluator, mux, paths, store: daemon.store };
 }

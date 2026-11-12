@@ -47,8 +47,23 @@ export interface PrActivity {
   reviews: GhComment[];
 }
 
+/** An open PR found by searching GitHub. */
+export interface PrSummary {
+  ref: PrRef;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  updatedAt: string;
+}
+
+export interface ListPrsOptions {
+  /** true = PRs you authored; false = any open PR involving you. */
+  onlyMine: boolean;
+}
+
 export interface GhClient {
   fetchActivity(ref: PrRef): Promise<PrActivity>;
+  listMyPrs(opts: ListPrsOptions): Promise<PrSummary[]>;
   prState(ref: PrRef): Promise<GhPrView["state"]>;
   viewerLogin(host: string): Promise<string>;
   failedLog(ref: PrRef, runId: string): Promise<string>;
@@ -94,6 +109,36 @@ export class GhCli implements GhClient {
       this.api<GhComment>(ref, `pulls/${ref.number}/reviews`),
     ]);
     return { view, inlineComments, conversationComments, reviews };
+  }
+
+  async listMyPrs(opts: ListPrsOptions): Promise<PrSummary[]> {
+    const out = await execOk(
+      this.run,
+      [
+        "gh",
+        "search",
+        "prs",
+        opts.onlyMine ? "--author=@me" : "--involves=@me",
+        "--state=open",
+        "--limit=200",
+        "--json",
+        "number,title,url,isDraft,updatedAt,repository",
+      ],
+      { timeoutMs: 60_000 },
+    );
+    const rows = JSON.parse(out) as {
+      number: number;
+      title: string;
+      url: string;
+      isDraft: boolean;
+      updatedAt: string;
+      repository: { nameWithOwner: string };
+    }[];
+    return rows.map((r) => {
+      const host = new URL(r.url).host.toLowerCase();
+      const [owner, repo] = r.repository.nameWithOwner.split("/") as [string, string];
+      return { ref: { host, owner, repo, number: r.number }, title: r.title, url: r.url, isDraft: r.isDraft, updatedAt: r.updatedAt };
+    });
   }
 
   async viewerLogin(host: string): Promise<string> {

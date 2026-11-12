@@ -4,6 +4,9 @@ import { loadConfig, defaultConfig, watchConfig, type Config } from "../core/con
 import { Store } from "../core/db.ts";
 import { ensureHome, selfCommand, type Paths } from "../core/paths.ts";
 import { ClaudeEvaluator, type Evaluator } from "../evaluator/evaluator.ts";
+import { exec as defaultExec, type Exec } from "../core/exec.ts";
+import { parsePrRef, prId } from "../core/pr-ref.ts";
+import { RepoLocator } from "../core/repo-locate.ts";
 import { GhCli, type GhClient } from "../github/gh.ts";
 import { HerdrMux } from "../mux/herdr.ts";
 import type { Multiplexer } from "../mux/mux.ts";
@@ -16,6 +19,8 @@ const PROMPT_RETENTION_MS = 7 * 24 * 3600_000;
 
 export interface DaemonOverrides {
   gh?: GhClient;
+  /** Runs git for locating local clones. */
+  exec?: Exec;
   evaluator?: Evaluator;
   muxFactory?: (name: Config["multiplexer"]) => Multiplexer;
   now?: () => number;
@@ -28,6 +33,8 @@ export class Daemon {
   readonly store: Store;
   readonly sentinel: Sentinel;
   readonly dispatcher: Dispatcher;
+  private readonly gh: GhClient;
+  private readonly repos: RepoLocator;
   private config: Config;
   private configError: string | null = null;
   private server?: ReturnType<typeof Bun.serve>;
@@ -62,9 +69,11 @@ export class Daemon {
       now,
       log,
     });
+    this.gh = o.gh ?? new GhCli();
+    this.repos = new RepoLocator(o.exec ?? defaultExec);
     this.sentinel = new Sentinel({
       store: this.store,
-      gh: o.gh ?? new GhCli(),
+      gh: this.gh,
       evaluator:
         o.evaluator ??
         new ClaudeEvaluator(() => ({
@@ -162,6 +171,18 @@ export class Daemon {
         return this.store.listPrs().map((pr) => ({ ...pr, session: this.store.getSession(pr.session_id) })) as R;
       case "watch":
         return (await this.sentinel.watch(p)) as R;
+      case "myPrs":
+        return (await this.myPrs()) as R;
+      case "newWatchDefaults": {
+        const { model, effort, models, efforts, startNow, includeExisting } = this.config.newWatch;
+        return { model, effort, models, efforts, startNow, includeExisting } as R;
+      }
+      case "suggestCwd":
+        return { path: await this.suggestCwd((p as { pr: string }).pr) } as R;
+      case "validateCwd": {
+        const { pr, path } = p as RpcMethods["validateCwd"][0];
+        return (await this.repos.validate(path, parsePrRef(pr))) as R;
+      }
       case "unwatch":
         return { removed: this.sentinel.unwatch((p as { pr: string }).pr) } as R;
       case "check": {
@@ -195,6 +216,25 @@ export class Daemon {
       default:
         throw new Error(`Unknown method ${String(method)}`);
     }
+  }
+
+  private async myPrs() {
+    const prs = await this.gh.listMyPrs({ onlyMine: this.config.newWatch.onlyMine });
+    return prs
+      .map((pr) => {
+        const id = prId(pr.ref);
+        return { id, ...pr.ref, title: pr.title, url: pr.url, isDraft: pr.isDraft, updatedAt: pr.updatedAt, watched: !!this.store.getPr(id) };
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  /** A watched PR's cwd for the same repo wins over scanning the configured roots. */
+  private async suggestCwd(pr: string): Promise<string | null> {
+    const ref = parsePrRef(pr);
+    const prefix = `${ref.host}/${ref.owner}/${ref.repo}#`.toLowerCase();
+    const known = this.store.listPrs().find((row) => row.id.toLowerCase().startsWith(prefix));
+    if (known && existsSync(known.cwd)) return known.cwd;
+    return this.repos.suggest(ref, this.config.newWatch.repoRoots);
   }
 
   start() {

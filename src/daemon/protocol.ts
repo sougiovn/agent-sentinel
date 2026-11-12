@@ -17,11 +17,48 @@ export interface PrListEntry extends PrRow {
   session: SessionRow | null;
 }
 
+/** An open GitHub PR offered by the TUI's "watch a PR" picker. */
+export interface MyPr {
+  /** `host/owner/repo#n`, the same id used for watched PRs. */
+  id: string;
+  host: string;
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  updatedAt: string;
+  /** Already watched by Sentinel. */
+  watched: boolean;
+}
+
+export interface NewWatchDefaults {
+  model: string;
+  effort: string;
+  models: string[];
+  efforts: string[];
+  startNow: boolean;
+  includeExisting: boolean;
+}
+
+export interface CwdCheck {
+  ok: boolean;
+  /** The expanded absolute path. */
+  path: string;
+  error?: string;
+  warning?: string;
+}
+
 /** method name → [params, result] */
 export interface RpcMethods {
   status: [Record<string, never>, StatusInfo];
   list: [Record<string, never>, PrListEntry[]];
   watch: [WatchRequest, WatchResult[]];
+  myPrs: [Record<string, never>, MyPr[]];
+  newWatchDefaults: [Record<string, never>, NewWatchDefaults];
+  suggestCwd: [{ pr: string }, { path: string | null }];
+  validateCwd: [{ pr: string; path: string }, CwdCheck];
   unwatch: [{ pr: string }, { removed: boolean }];
   check: [{ pr?: string }, { checked: string[] }];
   history: [{ pr: string }, EventRow[]];

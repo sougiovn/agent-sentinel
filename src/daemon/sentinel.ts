@@ -17,17 +17,29 @@ export interface SentinelDeps {
   log: (msg: string) => void;
 }
 
+export interface NewSessionRequest {
+  /** Omitted or "default" = the agent's own default. */
+  model?: string;
+  effort?: string;
+  /** Launch the session right away instead of waiting for the first actionable feedback. */
+  startNow: boolean;
+}
+
 export interface WatchRequest {
   prs: string[];
   agent: AgentKind;
-  sessionId: string;
+  /** Existing agent session to resume. Required unless `newSession` is set. */
+  sessionId?: string;
   cwd: string;
   includeExisting?: boolean;
+  /** Have Sentinel create a fresh agent session for these PRs (claude only). */
+  newSession?: NewSessionRequest;
 }
 
 export interface WatchResult {
   id: string;
   created: boolean;
+  sessionId?: string;
   error?: string;
 }
 
@@ -65,7 +77,16 @@ export class Sentinel {
 
   watch(req: WatchRequest): Promise<WatchResult[]> {
     return this.queue.run(async () => {
+      const fresh = req.newSession;
+      if (fresh && req.agent !== "claude") {
+        return req.prs.map((id) => ({ id, created: false, error: "Sentinel can only start new sessions for claude" }));
+      }
+      const sessionId = fresh ? crypto.randomUUID() : req.sessionId;
+      if (!sessionId) return req.prs.map((id) => ({ id, created: false, error: "A session id is required" }));
+      const sessionOpts = fresh ? { model: fresh.model ?? null, effort: fresh.effort ?? null, started: false } : undefined;
+
       const results: WatchResult[] = [];
+      const titles = new Map<string, string>();
       for (const raw of req.prs) {
         let ref: PrRef;
         try {
@@ -81,18 +102,37 @@ export class Sentinel {
             results.push({ id, created: false, error: `PR is ${activity.view.state.toLowerCase()}` });
             continue;
           }
+          titles.set(id, activity.view.title);
           const now = this.d.now();
-          const created = this.d.store.upsertPr({ id, url: prUrl(ref), agent: req.agent, sessionId: req.sessionId, cwd: req.cwd, now });
+          const created = this.d.store.upsertPr({
+            id,
+            url: prUrl(ref),
+            agent: req.agent,
+            sessionId,
+            cwd: req.cwd,
+            now,
+            session: sessionOpts,
+          });
           if (created && !req.includeExisting) this.d.store.markSeen(id, normalize(activity));
-          this.d.store.addEvent(id, created ? "registered" : "reassigned", { agent: req.agent, session: req.sessionId, cwd: req.cwd }, now);
+          this.d.store.addEvent(
+            id,
+            created ? "registered" : "reassigned",
+            { agent: req.agent, session: sessionId, cwd: req.cwd, ...(fresh ? { newSession: fresh } : {}) },
+            now,
+          );
           if (created && !req.includeExisting) this.d.store.setPrStatus(id, "no_changes", "Baseline recorded", now);
-          results.push({ id, created });
+          results.push({ id, created, sessionId });
         } catch (e) {
           results.push({ id, created: false, error: (e as Error).message });
         }
       }
       if (req.includeExisting) {
         for (const r of results) if (!r.error) await this.checkPrInner(r.id);
+      }
+      const first = results.find((r) => !r.error);
+      if (fresh?.startNow && first) {
+        const pr = this.d.store.getPr(first.id);
+        if (pr) await this.d.dispatcher.kickoff(sessionId, { id: pr.id, url: pr.url, title: titles.get(pr.id) ?? "" });
       }
       return results;
     });

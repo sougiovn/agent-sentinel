@@ -1,7 +1,8 @@
 import type { Config } from "../core/config.ts";
 import type { Store } from "../core/db.ts";
 import type { Paths } from "../core/paths.ts";
-import type { Item } from "../core/types.ts";
+import { fromPrId } from "../core/pr-ref.ts";
+import type { Item, SessionRow } from "../core/types.ts";
 import { renderFixPrompt, type FixGroup } from "../evaluator/prompt.ts";
 import type { Multiplexer } from "../mux/mux.ts";
 import { injectionLine, launchCommand, writePromptFile, type HookSignal } from "./launcher.ts";
@@ -81,8 +82,78 @@ export class Dispatcher {
       return "empty";
     }
 
-    const now = this.d.now();
     const text = renderFixPrompt(cfg.fixPromptTemplate, [...groups.values()]);
+    return this.deliver(session, text, {
+      onDelivered: (paneId, promptFile, now) => {
+        store.clearPending(sessionId);
+        for (const [prId, g] of groups) {
+          store.setPrStatus(prId, "fix_running", g.reason);
+          store.addEvent(prId, "fix_delivered", { pane: paneId, items: g.items.map((i) => i.id), promptFile }, now);
+        }
+        this.d.log(`session ${sessionId}: delivered ${pending.length} item(s) to pane ${paneId}`);
+      },
+      onFailed: (msg, now) => {
+        // Roll back so the next poll re-evaluates these items together with anything newer.
+        for (const [prId, g] of groups) {
+          store.unmarkSeen(prId, g.items.map((i) => i.id));
+          store.setPrStatus(prId, "spawn_failed", msg);
+          store.addEvent(prId, "spawn_failed", { error: msg }, now);
+        }
+        store.clearPending(sessionId);
+      },
+    });
+  }
+
+  /**
+   * Launches a session Sentinel created itself with an intro prompt, so the agent is ready before any feedback.
+   * Does nothing if the session has already been launched.
+   */
+  async kickoff(sessionId: string, pr: { id: string; url: string; title: string }): Promise<DispatchResult> {
+    if (this.inFlight.has(sessionId)) return "queued";
+    this.inFlight.add(sessionId);
+    try {
+      const { store } = this.d;
+      const session = store.getSession(sessionId);
+      if (!session) return "empty";
+      if (session.started) return "empty";
+      if (session.paused) return "paused";
+      const ref = fromPrId(pr.id);
+      const text = this.d
+        .config()
+        .introPromptTemplate.replaceAll("{{prUrl}}", pr.url)
+        .replaceAll("{{title}}", pr.title)
+        .replaceAll("{{cwd}}", session.cwd)
+        .replaceAll("{{repo}}", `${ref.owner}/${ref.repo}`)
+        .replaceAll("{{number}}", String(ref.number));
+      return await this.deliver(session, text, {
+        onDelivered: (paneId, promptFile, now) => {
+          store.setPrStatus(pr.id, "fix_running", "Session started");
+          store.addEvent(pr.id, "session_started", { pane: paneId, promptFile }, now);
+          this.d.log(`session ${sessionId}: started in pane ${paneId}`);
+        },
+        onFailed: (msg, now) => {
+          store.setPrStatus(pr.id, "spawn_failed", msg);
+          store.addEvent(pr.id, "spawn_failed", { error: msg }, now);
+        },
+      });
+    } finally {
+      this.inFlight.delete(sessionId);
+    }
+  }
+
+  /** Types the prompt into the session's pane, creating the pane and launching the agent as needed. */
+  private async deliver(
+    session: SessionRow,
+    text: string,
+    hooks: {
+      onDelivered: (paneId: string, promptFile: string, now: number) => void;
+      onFailed: (msg: string, now: number) => void;
+    },
+  ): Promise<DispatchResult> {
+    const { store } = this.d;
+    const sessionId = session.session_id;
+    const cfg = this.d.config();
+    const now = this.d.now();
     const mux = this.d.mux();
     try {
       await mux.ensureAvailable();
@@ -91,7 +162,20 @@ export class Dispatcher {
       if (paneId && !(await mux.paneExists(paneId))) paneId = null;
 
       const launch = () =>
-        launchCommand({ agent: session.agent, sessionId, cwd: session.cwd, promptFile }, cfg, this.d.paths, this.d.self);
+        launchCommand(
+          {
+            agent: session.agent,
+            sessionId,
+            cwd: session.cwd,
+            promptFile,
+            newSession: !session.started,
+            model: session.model,
+            effort: session.effort,
+          },
+          cfg,
+          this.d.paths,
+          this.d.self,
+        );
 
       if (!paneId) {
         const ref = await mux.createPane({
@@ -104,29 +188,18 @@ export class Dispatcher {
         paneId = ref.paneId;
         store.updateSession(sessionId, { mux: mux.name, pane_id: ref.paneId, tab_id: ref.tabId });
         await mux.sendLine(paneId, launch());
-      } else if (session.agent_running) {
+      } else if (session.agent_running && session.started) {
         await mux.sendLine(paneId, injectionLine(promptFile));
       } else {
         await mux.sendLine(paneId, launch());
       }
 
-      store.updateSession(sessionId, { state: "busy", busy_since: now, agent_running: 1, last_signal_at: now });
-      store.clearPending(sessionId);
-      for (const [prId, g] of groups) {
-        store.setPrStatus(prId, "fix_running", g.reason);
-        store.addEvent(prId, "fix_delivered", { pane: paneId, items: g.items.map((i) => i.id), promptFile }, now);
-      }
-      this.d.log(`session ${sessionId}: delivered ${pending.length} item(s) to pane ${paneId}`);
+      store.updateSession(sessionId, { state: "busy", busy_since: now, agent_running: 1, last_signal_at: now, started: 1 });
+      hooks.onDelivered(paneId, promptFile, now);
       return "delivered";
     } catch (e) {
       const msg = (e as Error).message;
-      // Roll back so the next poll re-evaluates these items together with anything newer.
-      for (const [prId, g] of groups) {
-        store.unmarkSeen(prId, g.items.map((i) => i.id));
-        store.setPrStatus(prId, "spawn_failed", msg);
-        store.addEvent(prId, "spawn_failed", { error: msg }, now);
-      }
-      store.clearPending(sessionId);
+      hooks.onFailed(msg, now);
       this.d.log(`session ${sessionId}: spawn failed: ${msg}`);
       return "failed";
     }

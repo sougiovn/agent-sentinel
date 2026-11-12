@@ -56,6 +56,19 @@ export interface SessionRow {
   agent_running: number;
   busy_since: number | null;
   last_signal_at: number | null;
+  /** Model passed to the agent on every launch; null = agent default. */
+  model: string | null;
+  /** Effort level passed to the agent on every launch; null = agent default. */
+  effort: string | null;
+  /** 0 until Sentinel has launched a session it created itself (first launch uses --session-id). */
+  started: number;
+}
+
+/** Options for a session Sentinel creates itself rather than one handed off by an agent. */
+export interface SessionOptions {
+  model?: string | null;
+  effort?: string | null;
+  started?: boolean;
 }
 
 export interface EventRow {

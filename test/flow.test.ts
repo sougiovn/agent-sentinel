@@ -294,3 +294,101 @@ describe("rpc", () => {
     expect(t.daemon.status().multiplexer).toBe("rex");
   });
 });
+
+describe("new-session watches (TUI)", () => {
+  const fresh = (startNow: boolean, includeExisting = false, extra: { model?: string; effort?: string } = {}) => ({
+    prs: [PR],
+    agent: "claude" as const,
+    cwd: "/repo",
+    includeExisting,
+    newSession: { startNow, ...extra },
+  });
+
+  test("start now launches a new session with an intro prompt, later feedback resumes it", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref, { title: "Fix login" });
+    t.gh.comment(ref, { id: 100, body: "old comment" });
+    const [r] = await t.daemon.handle("watch", fresh(true, false, { model: "opus", effort: "high" }));
+    expect(r!.error).toBeUndefined();
+    const sid = r!.sessionId!;
+    expect(sid).toMatch(/^[0-9a-f-]{36}$/);
+
+    const s = t.store.getSession(sid)!;
+    expect([s.model, s.effort, s.started]).toEqual(["opus", "high", 1]);
+    const [launch] = t.mux.allLines();
+    expect(launch).toContain(`--session-id '${sid}'`);
+    expect(launch).toContain(`'--model' 'opus' '--effort' 'high'`);
+    expect(t.evaluator.calls).toHaveLength(0);
+    expect(t.store.events(ID).map((e) => e.kind)).toContain("session_started");
+
+    await t.daemon.handle("signal", { sessionId: sid, signal: "exit" });
+    t.gh.comment(ref, { id: 101, body: "rename this" });
+    await t.daemon.sentinel.tick();
+    const lines = t.mux.allLines();
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain(`--resume '${sid}'`);
+    expect(lines[1]).toContain(`'--model' 'opus'`);
+  });
+
+  test("on first feedback waits, then the first launch creates the session", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref);
+    const [r] = await t.daemon.handle("watch", fresh(false));
+    expect(t.mux.allLines()).toHaveLength(0);
+    expect(t.store.getSession(r!.sessionId!)!.started).toBe(0);
+
+    t.gh.comment(ref, { id: 101 });
+    await t.daemon.sentinel.tick();
+    const lines = t.mux.allLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`--session-id '${r!.sessionId}'`);
+    expect(t.store.getSession(r!.sessionId!)!.started).toBe(1);
+  });
+
+  test("include existing delivers existing feedback as the first prompt instead of the intro", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref);
+    t.gh.comment(ref, { id: 100, body: "please fix" });
+    const [r] = await t.daemon.handle("watch", fresh(true, true));
+    expect(t.evaluator.calls).toHaveLength(1);
+    const lines = t.mux.allLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`--session-id '${r!.sessionId}'`);
+    expect(t.store.events(ID).map((e) => e.kind)).not.toContain("session_started");
+  });
+
+  test("codex can't get a new session; a handoff still needs a session id", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref);
+    const [r] = await t.daemon.handle("watch", { ...fresh(true), agent: "codex" });
+    expect(r!.error).toContain("only start new sessions for claude");
+    const [r2] = await t.daemon.handle("watch", { prs: [PR], agent: "claude", cwd: "/r" });
+    expect(r2!.error).toContain("session id is required");
+    expect(t.store.getPr(ID)).toBeNull();
+  });
+
+  test("handed-off sessions count as started", async () => {
+    const t = await setup();
+    expect(t.store.getSession("sess-1")!.started).toBe(1);
+  });
+
+  test("myPrs lists only authored PRs by default and flags watched ones", async () => {
+    const t = await setup();
+    t.gh.addSearchable(ref, "Test PR", { updatedAt: "2026-01-01T00:00:00Z" });
+    t.gh.addSearchable(parsePrRef("acme/api#2"), "Newer", { updatedAt: "2026-02-01T00:00:00Z" });
+    t.gh.addSearchable(parsePrRef("acme/api#3"), "Not mine", { mine: false });
+    const list = await t.daemon.handle("myPrs", {});
+    expect(list.map((p) => [p.id, p.watched])).toEqual([
+      ["github.com/acme/api#2", false],
+      [ID, true],
+    ]);
+    expect(t.gh.listCalls).toEqual([{ onlyMine: true }]);
+  });
+
+  test("suggestCwd prefers the cwd of a watched PR in the same repo", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref);
+    await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: t.paths.home });
+    expect((await t.daemon.handle("suggestCwd", { pr: "acme/web#9" })).path).toBe(t.paths.home);
+  });
+});

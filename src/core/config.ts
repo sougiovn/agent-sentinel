@@ -14,6 +14,18 @@ Instructions:
 - Never reply to, react to, or resolve comments written by humans. If you change code because of a human comment, tell the user what changed and suggest a reply they can paste.
 - If an item doesn't need a code change, explain why instead of changing code.`;
 
+export const DEFAULT_INTRO_TEMPLATE = `Sentinel started this session to own the pull request {{prUrl}} ({{title}}).
+
+Get familiar with it:
+- This directory ({{cwd}}) is a clone of {{repo}}. Check out the PR branch (\`gh pr checkout {{number}}\`) if it isn't checked out already.
+- Read the PR description and diff so you understand the change.
+
+Then stop and wait. Sentinel will resume this session with review comments and failing checks that need fixing.
+- Never reply to, react to, or resolve comments written by humans.`;
+
+/** "default" in model/effort settings means the flag is omitted and the agent decides. */
+export const AGENT_DEFAULT = "default";
+
 export const ConfigSchema = z.object({
   multiplexer: z.enum(["rex", "herdr"]).default("rex"),
   pollIntervalSec: z.number().int().min(30).default(300),
@@ -47,6 +59,25 @@ export const ConfigSchema = z.object({
     })
     .prefault({}),
   fixPromptTemplate: z.string().min(1).default(DEFAULT_FIX_TEMPLATE),
+  /** Defaults for watches started from the TUI, which get a new agent session. */
+  newWatch: z
+    .object({
+      /** Only list PRs you authored. false = any open PR involving you. */
+      onlyMine: z.boolean().default(true),
+      /** Directories scanned (two levels deep) for local clones of a PR's repo. */
+      repoRoots: z.array(z.string()).default(["~/work"]),
+      model: z.string().min(1).default(AGENT_DEFAULT),
+      effort: z.string().min(1).default(AGENT_DEFAULT),
+      models: z.array(z.string().min(1)).default([AGENT_DEFAULT, "opus", "sonnet", "haiku"]),
+      efforts: z.array(z.string().min(1)).default([AGENT_DEFAULT, "low", "medium", "high", "xhigh", "max"]),
+      /** Launch the session right away (true) or wait for the first actionable feedback (false). */
+      startNow: z.boolean().default(true),
+      /** Act on comments and failing checks that already exist when the watch starts. */
+      includeExisting: z.boolean().default(true),
+    })
+    .prefault({}),
+  /** First prompt for a session started with "start now" when there is no feedback to fix yet. */
+  introPromptTemplate: z.string().min(1).default(DEFAULT_INTRO_TEMPLATE),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
