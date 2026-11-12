@@ -25,12 +25,15 @@ sentinel watch <pr>...       # from inside an agent session: hand off PRs
 sentinel list | status | check [<pr>] | unwatch <pr> | reload | stop
 ```
 
+Or press `n` in the dashboard to watch one of your open PRs without an agent session. Pick a PR, choose the model, effort and local clone, and Sentinel starts a new Claude session for it, either right away or when the first feedback arrives.
+
 `watch` detects the agent from `$CLAUDE_CODE_SESSION_ID` or `$CODEX_THREAD_ID`, and uses the current directory as the place to resume in. Override with `--agent`, `--session` and `--cwd`. Activity that already exists when a PR is registered counts as seen; pass `--include-existing` to evaluate it.
 
 ### TUI keys
 
-`↑/↓` select · `enter` event history · `c` check now · `d` unwatch · `p` pause/resume the session's deliveries · `s` settings · `r` reload config · `S` retry starting the daemon · `q` quit. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`.
-In settings: `enter` edits a field or cycles an enum, and `e` opens the fix prompt template in `$EDITOR`.
+`↑/↓` select · `enter` event history · `n` watch one of your PRs · `c` check now · `d` unwatch · `p` pause/resume the session's deliveries · `s` settings · `r` reload config · `S` retry starting the daemon · `q` quit. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`.
+In settings: `enter` edits a field or cycles an enum, and `e` opens a prompt template in `$EDITOR`.
+In the PR picker: type to filter by org, repo, `#number` or title, `↑/↓` to move, `enter` to pick. In the form: `←/→` or `space` changes a value, `e` types a custom model or path, and `enter` on `[ Watch ]` starts the watch.
 
 ## How it works
 

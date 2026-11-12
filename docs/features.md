@@ -47,6 +47,23 @@ sentinel watch <pr> [<pr>...] [--agent claude|codex] [--session <id>] [--cwd <di
 - **Rejected:** PRs that are closed or merged at registration time, and references that don't parse. Each PR in a multi-PR `watch` is reported separately (`✓` or `✗`), and the command exits non-zero if any failed.
 - **Starts the daemon:** if it isn't running, `watch` starts it first.
 
+### Watching a PR from the TUI (new sessions)
+
+Press `n` in the dashboard to watch a PR that no agent session owns yet. Sentinel creates a new Claude session for it.
+
+1. **Pick a PR.** Sentinel lists your open PRs with `gh search prs --author=@me --state=open` (up to 200, most recently updated first). Set `newWatch.onlyMine: false` to list any open PR involving you (`--involves=@me`). Type to filter: every space-separated word must match the org, repo, `#number` or title (case-insensitive). PRs Sentinel already watches are marked `watched`; picking one moves it to the new session.
+2. **Fill the form.**
+   - **Agent:** Claude only. Codex can't be given a session id up front, so it isn't offered yet.
+   - **Model / Effort:** cycle through `newWatch.models` / `newWatch.efforts`, or press `e` to type any model. `default` omits the flag. The choice is stored on the session and passed (`--model`, `--effort`) on every launch, including resumes.
+   - **Directory:** prefilled with a local clone. A watched PR in the same repo supplies its directory first. Otherwise Sentinel scans `newWatch.repoRoots` (default `~/work`, two levels deep) for a git clone whose `origin` is the PR's repo, preferring a directory named after the repo. `enter` edits it, and `~` is expanded. On submit the path must exist and be a git repo. If its `origin` is a different repo, Sentinel warns you and a second `enter` goes ahead anyway.
+   - **Start session:** `now` (default `newWatch.startNow`) or `on first feedback`.
+   - **Existing feedback:** act on comments and failing checks already on the PR (default `newWatch.includeExisting`: on), or baseline them like `sentinel watch` does.
+3. **Start.** Sentinel generates a session UUID and registers the PR with it.
+   - The first launch runs `claude --session-id <uuid> …` instead of `--resume`, so the hook signals match from the start. Later launches resume it.
+   - With **Existing feedback** on, existing items are evaluated right away, and if any need work they become the first prompt.
+   - With **Start session: now** and nothing to fix, Sentinel launches the session with `introPromptTemplate`, which tells the agent to check out the PR branch, read the change and wait. The PR's history records `session_started`.
+   - With **on first feedback**, nothing launches until a later poll finds something to fix.
+
 ## Polling
 
 - One global interval, `pollIntervalSec` (default 300, minimum 30). The first poll runs about 3 seconds after the daemon starts; each later one is scheduled after the previous pass finishes.
@@ -123,6 +140,8 @@ Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) th
   cd '<cwd>' && 'claude' --resume '<session>' --settings '<hooks file>' \
     --add-dir '~/.config/sentinel/prompts' <claude args> "$(cat '<prompt file>')"
   ```
+
+  A session created from the TUI uses `--session-id '<session>'` on its first launch. Its model and effort are added as `--model`/`--effort` (Codex: `-m`, `-c model_reasoning_effort=…`).
 
   For Codex: `cd '<cwd>' && 'codex' resume -c hooks.Stop=… -c hooks.UserPromptSubmit=… <codex args> '<session>' "$(cat '<prompt file>')"`.
 - **Agent still running and idle:** one line, `Sentinel has new PR feedback for you. Read the file <prompt file> and follow its instructions.`, followed by Enter. Typing a pointer instead of the whole prompt avoids pasting multi-line text into the agent's input.
@@ -217,6 +236,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | --- | --- |
 | `↑`/`↓` or `k`/`j` | Select a PR |
 | `Enter` | Event history for the PR |
+| `n` / `w` | Watch one of your PRs with a new Claude session (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)) |
 | `c` | Check the selected PR now |
 | `d`, then `y` | Unwatch the selected PR |
 | `p` | Pause or resume deliveries to the PR's agent session |
@@ -227,7 +247,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 
 - **Daemon offline:** while the daemon is starting, the TUI shows "Starting Sentinel daemon…". If it fails to start or stops later, the TUI shows the error and offers `S` to try again.
 - **Config errors:** an invalid config file, or a daemon running on its last good config, is shown in a red banner.
-- **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`.
+- **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`.
 
 **Settings:** every config field is listed with its current value.
 
@@ -236,7 +256,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `Enter`/`Space` | Edit a text or number field inline; cycle an enum (`multiplexer`, `spawn.layout`) |
 | `Enter` (while editing) | Save |
 | `Esc` (while editing) | Cancel |
-| `e` | Open `fixPromptTemplate` in `$VISUAL` or `$EDITOR` (default `vi`) |
+| `e` | Open the selected template (`fixPromptTemplate`, `introPromptTemplate`) in `$VISUAL` or `$EDITOR` (default `vi`) |
 | `r` | Reload config |
 | `Esc`/`q` | Back to the main view |
 
@@ -265,6 +285,13 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `spawn.busyTimeoutMin` | `60` | |
 | `spawn.sessionName` | `"sentinel"` | Name of Sentinel's Rex session or Herdr workspace |
 | `fixPromptTemplate` | built-in | Placeholders `{{prUrl}}`, `{{reason}}`, `{{items}}` |
+| `introPromptTemplate` | built-in | First prompt for a TUI-started session with nothing to fix. Placeholders `{{prUrl}}`, `{{title}}`, `{{repo}}`, `{{number}}`, `{{cwd}}` |
+| `newWatch.onlyMine` | `true` | PR picker lists only PRs you authored; `false` = any open PR involving you |
+| `newWatch.repoRoots` | `["~/work"]` | Scanned two levels deep for local clones |
+| `newWatch.model` / `.models` | `"default"` / `default, opus, sonnet, haiku` | Default and choices for the form; `default` omits `--model` |
+| `newWatch.effort` / `.efforts` | `"default"` / `default, low, medium, high, xhigh, max` | Default and choices for the form; `default` omits `--effort` |
+| `newWatch.startNow` | `true` | Form default for "Start session" |
+| `newWatch.includeExisting` | `true` | Form default for "Existing feedback" |
 
 **Reloading:**
 - The daemon watches the file and reloads about 200 ms after a change, whether the change came from the TUI or another editor. `sentinel reload` and the TUI's `r` reload on demand.
@@ -314,6 +341,7 @@ Not verified yet:
 - **Herdr:** the adapter is written from Herdr's help text; real JSON output hasn't been checked.
 - **Codex hooks:** whether `-c hooks.*` overrides fire is unconfirmed. If they don't, Codex sessions rely on the busy timeout.
 - **Resuming a real agent session from a PR comment** has not been done end to end.
+- **TUI-started sessions:** `claude --session-id` with `--model`/`--effort` and `gh search prs` haven't been run end to end through the daemon.
 
 Known limits:
 - If a session's busy timeout expires after its agent exited without an `exit` signal (always the case for Codex, which has no `exit` hook), the pointer line is typed into a bare shell instead of the agent.
