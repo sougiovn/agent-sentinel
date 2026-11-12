@@ -1,6 +1,6 @@
 # Agent Sentinel features
 
-This page describes what Sentinel does today and how each part behaves. [SPEC.md](../SPEC.md) has the original requirements; the [README](../README.md) has install steps and a quick overview.
+This page describes what Sentinel does today and how each part behaves. The [README](../README.md) has install steps and a quick overview.
 
 - [The flow end to end](#the-flow-end-to-end)
 - [Handing off PRs](#handing-off-prs)
