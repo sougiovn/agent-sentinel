@@ -210,3 +210,70 @@ test("TUI opens the selected PR in the browser with o", async () => {
   expect(opened).toEqual(["https://github.com/acme/web/pull/2"]);
   t.renderer.destroy();
 });
+
+test("TUI new-watch form: typed directory is validated, a remote mismatch needs a second enter", async () => {
+  const root = mkdtempSync(join(tmpdir(), "clone-"));
+  const other = join(root, "other");
+  mkdirSync(join(other, ".git"), { recursive: true });
+  const d = makeDaemon({ exec: fakeGit({ [other]: "git@github.com:acme/other.git" }) });
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [join(root, "empty")];
+  saveConfig(d.paths.config, cfg);
+  d.daemon.reload();
+  d.gh.addSearchable(parsePrRef("acme/web#1"), "Fix login redirect");
+  const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={d.paths} autoStart={false} client={client} />, { width: 140, height: 30 });
+  const frame = async (ms = 80) => {
+    await Bun.sleep(ms);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("n");
+  await frame();
+  t.mockInput.pressEnter();
+  let f = await frame();
+  expect(f).toContain("not found, press enter to type a path");
+
+  t.mockInput.pressArrow("down");
+  t.mockInput.pressArrow("down"); // Directory
+  t.mockInput.pressEnter();
+  await frame();
+  await t.mockInput.typeText(join(root, "missing"));
+  t.mockInput.pressEnter();
+  for (let i = 0; i < 3; i++) t.mockInput.pressArrow("down"); // [ Watch ]
+  t.mockInput.pressEnter();
+  f = await frame(200);
+  expect(f).toContain("is not a directory");
+
+  for (let i = 0; i < 3; i++) t.mockInput.pressArrow("up"); // Directory
+  t.mockInput.pressEnter();
+  await frame();
+  for (let i = 0; i < join(root, "missing").length; i++) t.mockInput.pressBackspace();
+  await t.mockInput.typeText(other);
+  t.mockInput.pressEnter();
+  for (let i = 0; i < 3; i++) t.mockInput.pressArrow("down");
+  t.mockInput.pressEnter();
+  f = await frame(200);
+  expect(f).toContain("not acme/web");
+  expect(d.store.listPrs()).toHaveLength(0);
+
+  t.mockInput.pressEnter(); // second enter goes ahead
+  await frame(300);
+  expect(d.store.getPr("github.com/acme/web#1")!.cwd).toBe(other);
+  t.renderer.destroy();
+});
+
+test("TUI asks to start the daemon before opening the PR picker", async () => {
+  const paths = getPaths(mkdtempSync(join(tmpdir(), "tui-")));
+  ensureHome(paths);
+  const t = await testRender(() => <App paths={paths} autoStart={false} />, { width: 120, height: 30 });
+  await Bun.sleep(300);
+  t.mockInput.pressKey("n");
+  await Bun.sleep(50);
+  await t.renderOnce();
+  const f = t.captureCharFrame();
+  expect(f).toContain("Start the daemon first");
+  expect(f).not.toContain("Watch a PR");
+  t.renderer.destroy();
+});

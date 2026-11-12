@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parsePrRef } from "../src/core/pr-ref.ts";
+import { join } from "node:path";
+import { defaultConfig, saveConfig } from "../src/core/config.ts";
 import { makeDaemon } from "./fakes.ts";
 
 const PR = "acme/web#1";
@@ -400,5 +402,47 @@ describe("titles", () => {
     t.gh.get(ref).view.title = "Renamed";
     await t.daemon.sentinel.tick();
     expect(t.store.getPr(ID)!.title).toBe("Renamed");
+  });
+});
+
+describe("new-session RPCs and failures", () => {
+  test("newWatchDefaults and myPrs follow the config", async () => {
+    const t = makeDaemon();
+    const cfg = defaultConfig();
+    cfg.newWatch.onlyMine = false;
+    cfg.newWatch.model = "opus";
+    saveConfig(t.paths.config, cfg);
+    t.daemon.reload();
+    const d = await t.daemon.handle("newWatchDefaults", {});
+    expect([d.model, d.startNow, d.includeExisting]).toEqual(["opus", true, true]);
+    await t.daemon.handle("myPrs", {});
+    expect(t.gh.listCalls).toEqual([{ onlyMine: false }]);
+  });
+
+  test("validateCwd rejects a missing directory", async () => {
+    const t = makeDaemon();
+    const r = await t.daemon.handle("validateCwd", { pr: PR, path: join(t.paths.home, "nope") });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("not a directory");
+  });
+
+  test("a failed kickoff leaves the session unstarted so the next launch still creates it", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref);
+    t.mux.available = false;
+    const [r] = await t.daemon.handle("watch", {
+      prs: [PR],
+      agent: "claude",
+      cwd: "/repo",
+      newSession: { startNow: true },
+    });
+    expect(r!.error).toBeUndefined();
+    expect(t.store.getPr(ID)!.last_status).toBe("spawn_failed");
+    expect(t.store.getSession(r!.sessionId!)!.started).toBe(0);
+
+    t.mux.available = true;
+    t.gh.comment(ref, { id: 101 });
+    await t.daemon.sentinel.tick();
+    expect(t.mux.allLines()[0]).toContain(`--session-id '${r!.sessionId}'`);
   });
 });

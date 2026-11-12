@@ -15,6 +15,9 @@ import { claudeHookSettings, launchCommand, sq } from "../src/spawn/launcher.ts"
 import { getPaths } from "../src/core/paths.ts";
 import { cycleEnum, FIELDS, filterFields, parseValue } from "../src/tui/settings.ts";
 import { fakeGit } from "./fakes.ts";
+import type { Exec } from "../src/core/exec.ts";
+import { Store } from "../src/core/db.ts";
+import { GhCli } from "../src/github/gh.ts";
 import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
 import type { MyPr } from "../src/daemon/protocol.ts";
 import { filterPrs, filterWatched } from "../src/tui/pr-filter.ts";
@@ -367,5 +370,72 @@ describe("watched PR filter", () => {
     expect(ids("acme login")).toEqual(["1"]);
     expect(ids("tools")).toEqual(["3"]);
     expect(ids("3")).toEqual([]);
+  });
+});
+
+describe("gh listMyPrs", () => {
+  test("searches authored (or involved) open PRs and parses the result", async () => {
+    const calls: string[][] = [];
+    const run: Exec = async (cmd) => {
+      calls.push(cmd);
+      return {
+        code: 0,
+        stderr: "",
+        stdout: JSON.stringify([
+          {
+            number: 5,
+            title: "Fix",
+            url: "https://GHE.corp.io/acme/web/pull/5",
+            isDraft: true,
+            updatedAt: "2026-01-01T00:00:00Z",
+            repository: { name: "web", nameWithOwner: "acme/web" },
+          },
+        ]),
+      };
+    };
+    const gh = new GhCli(run);
+    const [pr] = await gh.listMyPrs({ onlyMine: true });
+    expect(pr).toEqual({
+      ref: { host: "ghe.corp.io", owner: "acme", repo: "web", number: 5 },
+      title: "Fix",
+      url: "https://GHE.corp.io/acme/web/pull/5",
+      isDraft: true,
+      updatedAt: "2026-01-01T00:00:00Z",
+    });
+    expect(calls[0]!.slice(0, 5)).toEqual(["gh", "search", "prs", "--author=@me", "--state=open"]);
+    await gh.listMyPrs({ onlyMine: false });
+    expect(calls[1]).toContain("--involves=@me");
+  });
+});
+
+describe("store migrations", () => {
+  test("a database from before new-session watches upgrades in place", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "db-")), "sentinel.db");
+    const old = new Store(file);
+    old.db.exec(`
+      ALTER TABLE prs DROP COLUMN title;
+      ALTER TABLE sessions DROP COLUMN model;
+      ALTER TABLE sessions DROP COLUMN effort;
+      ALTER TABLE sessions DROP COLUMN started;
+      UPDATE meta SET value = '1' WHERE key = 'schema_version';
+      INSERT INTO prs (id, url, agent, session_id, cwd, registered_at) VALUES ('github.com/a/b#1', 'u', 'claude', 's', '/r', 1);
+      INSERT INTO sessions (session_id, agent, cwd) VALUES ('s', 'claude', '/r');
+    `);
+    old.close();
+    const store = new Store(file);
+    expect(store.getPr("github.com/a/b#1")!.title).toBeNull();
+    const s = store.getSession("s")!;
+    expect([s.model, s.effort, s.started]).toEqual([null, null, 1]);
+    store.close();
+  });
+});
+
+describe("settings booleans", () => {
+  test("shown and cycled as on/off", () => {
+    const field = FIELDS.find((f) => f.key === "newWatch.startNow")!;
+    const cfg = defaultConfig();
+    expect(field.get(cfg)).toBe("on");
+    field.set(cfg, cycleEnum(field, cfg));
+    expect(cfg.newWatch.startNow).toBe(false);
   });
 });
