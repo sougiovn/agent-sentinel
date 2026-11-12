@@ -7,13 +7,14 @@ See [docs/features.md](docs/features.md) for a full description of what's implem
 ## Install
 
 ```sh
+mise trust && mise install   # bun and gh, pinned in mise.toml
 bun install
 bun run build            # → dist/sentinel (single binary)
 ln -s "$PWD/dist/sentinel" ~/.local/bin/sentinel
 sentinel skill install   # teaches Claude Code / Codex how to hand off PRs
 ```
 
-Requires `gh` (authenticated), `claude`, and `rex` or `herdr` on `PATH`. Herdr's server must already be running; Sentinel doesn't start it.
+Requires `gh` (authenticated), `claude`, and `rex` or `herdr` on `PATH`. `mise` installs `bun` and `gh`; install `claude`, `codex`, Rex and Herdr with their own installers. Herdr's server must already be running; Sentinel doesn't start it.
 
 ## Usage
 
