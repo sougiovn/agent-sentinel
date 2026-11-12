@@ -98,3 +98,13 @@ export function cycleEnum(field: Field, c: Config): string {
   const i = opts.indexOf(String(field.get(c)));
   return opts[(i + 1) % opts.length]!;
 }
+
+/** Fields whose label or config key contains every whitespace-separated word of the query (case-insensitive). */
+export function filterFields(fields: Field[], query: string): Field[] {
+  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return fields;
+  return fields.filter((f) => {
+    const h = `${f.label} ${f.key}`.toLowerCase();
+    return tokens.every((t) => h.includes(t));
+  });
+}

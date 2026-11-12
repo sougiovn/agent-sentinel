@@ -1,20 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, loadConfig, parseConfig, saveConfig } from "../src/core/config.ts";
 import { parsePrRef, prId } from "../src/core/pr-ref.ts";
 import { detectAgent, hookSessionId } from "../src/cli/detect.ts";
+import { prGroup, prLabel, prLine, sortByGroup } from "../src/cli/format.ts";
+import { DaemonUnavailableError, type Client } from "../src/cli/client.ts";
+import { stopDaemon } from "../src/cli/daemon-control.ts";
 import { evaluatorArgs, scrubbedAgentEnv } from "../src/evaluator/evaluator.ts";
 import { renderFixPrompt } from "../src/evaluator/prompt.ts";
 import { newItems, normalize } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq } from "../src/spawn/launcher.ts";
 import { getPaths } from "../src/core/paths.ts";
-import { cycleEnum, FIELDS, parseValue } from "../src/tui/settings.ts";
+import { cycleEnum, FIELDS, filterFields, parseValue } from "../src/tui/settings.ts";
 import { fakeGit } from "./fakes.ts";
 import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
 import type { MyPr } from "../src/daemon/protocol.ts";
-import { filterPrs } from "../src/tui/pr-filter.ts";
+import { filterPrs, filterWatched } from "../src/tui/pr-filter.ts";
 
 describe("pr-ref", () => {
   test("parses URLs and short forms", () => {
@@ -272,5 +275,97 @@ describe("pr filter", () => {
     expect(ids("acme login")).toEqual([12]);
     expect(ids("acme/api")).toEqual([345]);
     expect(ids("nothing")).toEqual([]);
+  });
+});
+
+describe("settings filter", () => {
+  const labels = (q: string) => filterFields(FIELDS, q).map((f) => f.label);
+  test("matches label and key words, case-insensitive", () => {
+    expect(labels("")).toHaveLength(FIELDS.length);
+    expect(labels("busy")).toEqual(["Busy timeout (min)"]);
+    expect(labels("NEW WATCH effort")).toEqual(["New watch: default effort", "New watch: effort choices"]);
+    expect(labels("spawn.layout")).toEqual(["Spawn layout"]);
+    expect(labels("zzz")).toEqual([]);
+  });
+});
+
+describe("pr label", () => {
+  test("[org/repo/n] title, host only for enterprise", () => {
+    expect(prLabel({ id: "github.com/acme/web#12", title: "Fix login" })).toBe("[acme/web/12] Fix login");
+    expect(prLabel({ id: "github.com/acme/web#12", title: null })).toBe("[acme/web/12]");
+    expect(prLabel({ id: "ghe.corp.io/acme/web#3", title: "X" })).toBe("[ghe.corp.io/acme/web/3] X");
+  });
+});
+
+describe("stopDaemon", () => {
+  const fakeClient = (opts: { up: boolean; aliveChecks?: number }) => {
+    let left = opts.aliveChecks ?? 0;
+    const calls: string[] = [];
+    const c = {
+      calls,
+      async call(method: string) {
+        calls.push(method);
+        if (!opts.up) throw new DaemonUnavailableError();
+        return { ok: true };
+      },
+      async alive() {
+        return left-- > 0;
+      },
+    };
+    return c as unknown as Client & { calls: string[] };
+  };
+  const home = () => {
+    const paths = getPaths(mkdtempSync(join(tmpdir(), "stop-")));
+    mkdirSync(paths.home, { recursive: true });
+    return paths;
+  };
+
+  test("asks the daemon to stop and waits until it stops answering", async () => {
+    const c = fakeClient({ up: true, aliveChecks: 2 });
+    expect(await stopDaemon(home(), c)).toBe("stopped");
+    expect(c.calls).toEqual(["stop"]);
+  });
+  test("not running without a pidfile", async () => {
+    expect(await stopDaemon(home(), fakeClient({ up: false }))).toBe("not-running");
+  });
+  test("removes a stale pidfile", async () => {
+    const paths = home();
+    writeFileSync(paths.pid, "999999");
+    expect(await stopDaemon(paths, fakeClient({ up: false }))).toBe("not-running");
+    expect(existsSync(paths.pid)).toBe(false);
+  });
+});
+
+describe("pr grouping", () => {
+  test("group heading and line", () => {
+    expect(prGroup("github.com/acme/web#12")).toBe("acme/web");
+    expect(prGroup("ghe.corp.io/acme/web#12")).toBe("ghe.corp.io/acme/web");
+    expect(prLine({ id: "github.com/acme/web#12", title: "Fix login" })).toBe("#12 - Fix login");
+  });
+  test("groups sort alphabetically (case-insensitive), PRs by number", () => {
+    const ids = ["github.com/zeta/web#9", "github.com/acme/api#120", "github.com/Acme/billing#3", "github.com/acme/api#7"];
+    expect(sortByGroup(ids.map((id) => ({ id }))).map((p) => p.id)).toEqual([
+      "github.com/acme/api#7",
+      "github.com/acme/api#120",
+      "github.com/Acme/billing#3",
+      "github.com/zeta/web#9",
+    ]);
+  });
+});
+
+describe("watched PR filter", () => {
+  const prs = [
+    { id: "github.com/acme/web#1", title: "Fix login" },
+    { id: "github.com/acme/api#2", title: "Rate limits" },
+    { id: "github.com/zeta/tools#3", title: null },
+  ];
+  const ids = (q: string) => filterWatched(prs, q).map((p) => p.id.split("#")[1]);
+  test("matches org/repo and title, not the number", () => {
+    expect(ids("")).toEqual(["1", "2", "3"]);
+    expect(ids("ACME")).toEqual(["1", "2"]);
+    expect(ids("acme/api")).toEqual(["2"]);
+    expect(ids("acme login")).toEqual(["1"]);
+    expect(ids("tools")).toEqual(["3"]);
+    expect(ids("3")).toEqual([]);
   });
 });

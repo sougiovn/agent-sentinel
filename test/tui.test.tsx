@@ -109,12 +109,104 @@ test("TUI picks one of my PRs, fills the form and starts a new-session watch", a
   await Bun.sleep(300);
   f = await frame();
   expect(f).toContain("Watched PRs");
-  expect(f).toContain("github.com/acme/web#1");
+  expect(f).toMatch(/acme\/web[^\n]*\n[^\n]*#1 - Fix login redirect/);
 
   const pr = t0.store.getPr("github.com/acme/web#1")!;
   expect(pr.cwd).toBe(clone);
   const s = t0.store.getSession(pr.session_id)!;
   expect([s.model, s.effort, s.started]).toEqual(["opus", "low", 1]);
   expect(t0.mux.allLines()[0]).toContain(`--session-id '${pr.session_id}'`);
+  t.renderer.destroy();
+});
+
+test("TUI settings dialog filters fields with /", async () => {
+  const paths = getPaths(mkdtempSync(join(tmpdir(), "tui-")));
+  ensureHome(paths);
+  const t = await testRender(() => <App paths={paths} autoStart={false} />, { width: 120, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(80);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("s");
+  await frame();
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("busy");
+  let f = await frame();
+  expect(f).toContain("Busy timeout (min)");
+  expect(f).not.toContain("Multiplexer");
+  expect(f).not.toContain("/ /busy");
+
+  t.mockInput.pressEnter(); // leave the filter input, keep the filter
+  await frame();
+  t.mockInput.pressEnter(); // edit the only match
+  f = await frame();
+  expect(f).toContain("enter save");
+
+  t.mockInput.pressEscape(); // cancel edit
+  await frame();
+  t.mockInput.pressEscape(); // clear filter
+  f = await frame();
+  expect(f).toContain("Multiplexer");
+  expect(f).toContain("Settings");
+  t.renderer.destroy();
+});
+
+test("TUI filters watched PRs by repo or title with /", async () => {
+  const d = makeDaemon();
+  for (const [r, title] of [["acme/web#1", "Fix login redirect"], ["acme/api#2", "Add rate limits"], ["zeta/tools#3", "Bump deps"]] as const) {
+    d.gh.add(parsePrRef(r), { title });
+    await d.daemon.handle("watch", { prs: [r], agent: "claude", sessionId: "s1", cwd: "/r" });
+  }
+  const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={d.paths} autoStart={false} client={client} />, { width: 120, height: 24 });
+  const frame = async () => {
+    await Bun.sleep(80);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("acme rate");
+  let f = await frame();
+  expect(f).toContain("#2 - Add rate limits");
+  expect(f).not.toContain("Fix login redirect");
+  expect(f).not.toContain("zeta/tools");
+
+  for (let i = 0; i < 9; i++) t.mockInput.pressBackspace();
+  await t.mockInput.typeText("zeta");
+  t.mockInput.pressEnter(); // keep the filter, back to the list
+  f = await frame();
+  expect(f).toContain("#3 - Bump deps");
+  expect(f).not.toContain("acme/api");
+  expect(f).toContain("https://github.com/zeta/tools/pull/3"); // details follow the filtered selection
+
+  t.mockInput.pressEscape(); // clear the filter
+  f = await frame();
+  expect(f).toContain("Fix login redirect");
+  expect(f).toContain("Bump deps");
+  t.renderer.destroy();
+});
+
+test("TUI opens the selected PR in the browser with o", async () => {
+  const d = makeDaemon();
+  for (const r of ["acme/web#1", "acme/web#2"]) {
+    d.gh.add(parsePrRef(r));
+    await d.daemon.handle("watch", { prs: [r], agent: "claude", sessionId: "s1", cwd: "/r" });
+  }
+  const opened: string[] = [];
+  const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
+  const t = await testRender(
+    () => <App paths={d.paths} autoStart={false} client={client} openUrl={(u) => opened.push(u)} />,
+    { width: 120, height: 24 },
+  );
+  await Bun.sleep(100);
+  t.mockInput.pressArrow("down");
+  t.mockInput.pressKey("o");
+  await Bun.sleep(50);
+  expect(opened).toEqual(["https://github.com/acme/web/pull/2"]);
   t.renderer.destroy();
 });
