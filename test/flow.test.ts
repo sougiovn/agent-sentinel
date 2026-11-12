@@ -392,3 +392,13 @@ describe("new-session watches (TUI)", () => {
     expect((await t.daemon.handle("suggestCwd", { pr: "acme/web#9" })).path).toBe(t.paths.home);
   });
 });
+
+describe("titles", () => {
+  test("stored on watch and refreshed on poll", async () => {
+    const t = await setup();
+    expect(t.store.getPr(ID)!.title).toBe("Test PR");
+    t.gh.get(ref).view.title = "Renamed";
+    await t.daemon.sentinel.tick();
+    expect(t.store.getPr(ID)!.title).toBe("Renamed");
+  });
+});

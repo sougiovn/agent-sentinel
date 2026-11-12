@@ -56,6 +56,9 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN effort TEXT;
   ALTER TABLE sessions ADD COLUMN started INTEGER NOT NULL DEFAULT 1;
   `,
+  `
+  ALTER TABLE prs ADD COLUMN title TEXT;
+  `,
 ];
 
 export const EVENTS_PER_PR = 50;
@@ -134,6 +137,10 @@ export class Store {
 
   prsForSession(sessionId: string): PrRow[] {
     return this.db.query<PrRow, { s: string }>("SELECT * FROM prs WHERE session_id = $s").all({ s: sessionId });
+  }
+
+  setPrTitle(id: string, title: string) {
+    this.db.query("UPDATE prs SET title = $t WHERE id = $id").run({ id, t: title });
   }
 
   setPrStatus(id: string, status: PrStatus, reason: string | null, checkedAt?: number) {

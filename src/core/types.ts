@@ -41,6 +41,8 @@ export interface PrRow {
   last_checked_at: number | null;
   last_status: PrStatus;
   last_reason: string | null;
+  /** PR title as of the last poll; null until the first fetch after an upgrade. */
+  title: string | null;
 }
 
 export interface SessionRow {

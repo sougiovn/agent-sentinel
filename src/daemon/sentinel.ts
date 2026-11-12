@@ -113,6 +113,7 @@ export class Sentinel {
             now,
             session: sessionOpts,
           });
+          this.d.store.setPrTitle(id, activity.view.title);
           if (created && !req.includeExisting) this.d.store.markSeen(id, normalize(activity));
           this.d.store.addEvent(
             id,
@@ -187,6 +188,8 @@ export class Sentinel {
       log(`${id} is ${activity.view.state.toLowerCase()}; stopped monitoring and wiped its data`);
       return;
     }
+
+    if (activity.view.title !== pr.title) store.setPrTitle(id, activity.view.title);
 
     const fresh = newItems(normalize(activity), store.seenIds(id), await this.filterOptions(ref));
     if (fresh.length === 0) {
