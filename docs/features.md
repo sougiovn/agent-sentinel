@@ -21,7 +21,7 @@ This page describes what Sentinel does today and how each part behaves. The [REA
 
 ## The flow end to end
 
-1. An agent runs `sentinel watch <pr>` from its working directory. Sentinel records the PR, the agent kind, the session ID and the directory, and treats everything already on the PR as seen.
+1. An agent runs `sentinel watch <pr>` from its working directory. Sentinel records the PR, the agent kind, the session ID and the directory, and treats everything already on the PR as seen. Alternatively, you pick one of your PRs in the dashboard and Sentinel creates a new Claude session for it (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)).
 2. Every poll interval, the daemon fetches each PR's comments, reviews and checks with `gh`.
 3. Anything new is batched per PR and sent to one `claude -p` call, which decides whether the agent needs to act.
 4. Flagged items go into a per-session queue. When the session is free, Sentinel opens (or reuses) a pane in its own multiplexer session and resumes the agent with a prompt describing the work.
@@ -282,7 +282,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `evaluator.failedLogLines` | `150` | 0 disables log tails |
 | `ignoredAuthors` | `["@me"]` | Case-insensitive logins; `@me` = authenticated `gh` user |
 | `failingConclusions` | `FAILURE`, `ERROR`, `TIMED_OUT`, `CANCELLED`, `ACTION_REQUIRED`, `STARTUP_FAILURE` | Check conclusions and status states that count as failures |
-| `agents.claude.command` / `.args` | `"claude"` / `[]` | Extra arguments for resumed Claude sessions, e.g. `["--permission-mode", "acceptEdits"]` |
+| `agents.claude.command` / `.args` | `"claude"` / `[]` | Extra arguments for every Claude launch, e.g. `["--permission-mode", "acceptEdits"]` |
 | `agents.codex.command` / `.args` | `"codex"` / `[]` | Extra arguments for resumed Codex sessions, e.g. `["-s", "workspace-write"]` |
 | `spawn.layout` | `"sentinel-tab"` | Or `"tab-per-session"` |
 | `spawn.maxPanesPerTab` | `4` | |
@@ -317,16 +317,16 @@ Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
 | `prompts/` | Rendered fix prompts, kept 7 days |
 | `hooks/claude-settings.json` | Hook settings passed to resumed Claude sessions |
 | `eval/` | Working directory for evaluator calls |
-| `fix-prompt-template.md` | Scratch file used when editing the template from the TUI |
+| `fixPromptTemplate.md`, `introPromptTemplate.md` | Scratch files used when editing a template from the TUI |
 
 Database tables (`src/core/db.ts`, versioned migrations in `meta.schema_version`):
 
 | Table | Holds |
 | --- | --- |
-| `prs` | One row per watched PR: URL, agent, session, directory, registration time, last check time, status, reason |
+| `prs` | One row per watched PR: URL, title (refreshed every poll), agent, session, directory, registration time, last check time, status, reason |
 | `seen_items` | Item IDs already handled, per PR |
 | `pending_items` | Flagged items waiting for delivery, with the evaluator's reason |
-| `sessions` | Per agent session: agent, directory, multiplexer, pane and tab IDs, busy or idle, paused, agent running, busy-since and last-signal timestamps |
+| `sessions` | Per agent session: agent, directory, model and effort, whether Sentinel has launched it yet (`started`, 0 only for TUI-started sessions before their first launch), multiplexer, pane and tab IDs, busy or idle, paused, agent running, busy-since and last-signal timestamps |
 | `events` | Per-PR history, trimmed to the newest 50 |
 
 The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sentinel.db 'select id, last_status from prs'`. Write to it only while the daemon is stopped.
@@ -337,7 +337,7 @@ The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sen
 
 ## Verification status and known limits
 
-Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), config parsing and reload, the API, launch command quoting, and a TUI render-and-save test.
+Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), config parsing and reload, database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, and starting the daemon.
 
 Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 
@@ -347,8 +347,10 @@ Not verified yet:
 - **Codex hooks:** whether `-c hooks.*` overrides fire is unconfirmed. If they don't, Codex sessions rely on the busy timeout.
 - **Resuming a real agent session from a PR comment** has not been done end to end.
 - **TUI-started sessions:** `claude --session-id` with `--model`/`--effort` and `gh search prs` haven't been run end to end through the daemon.
+- **`sentinel restart` and the TUI's `o`** are covered by unit tests only; restarting a real daemon and opening a real browser haven't been tried.
 
 Known limits:
+- The watched-PR table doesn't scroll; with more PRs than fit, the bottom ones are hidden (use `/` to filter).
 - If a session's busy timeout expires after its agent exited without an `exit` signal (always the case for Codex, which has no `exit` hook), the pointer line is typed into a bare shell instead of the agent.
 - Agent args that contain commas can't be edited in the TUI; edit `config.json` instead.
 - Only the default `gh` account is used for each host.
