@@ -200,7 +200,8 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - `sentinel daemon` runs it in the foreground and logs to stderr as well as `sentinel.log`. Startup failures are written to the log too.
 - **Single instance:** a second daemon refuses to start while one is answering on the socket. A leftover socket file from a crashed daemon is removed on start.
 - **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `history`, `signal`, `pause`, `reload`, `stop`. The daemon is the only process that writes to SQLite.
-- **Stopping:** `sentinel stop` asks the daemon to exit; if it doesn't answer, Sentinel sends `SIGTERM` to the PID in `sentinel.pid`. `SIGINT` and `SIGTERM` shut it down cleanly, removing the socket and pidfile.
+- **Stopping:** `sentinel stop` asks the daemon to exit; if it doesn't answer, Sentinel sends `SIGTERM` to the PID in `sentinel.pid`. `SIGINT` and `SIGTERM` shut it down cleanly, removing the socket and pidfile. It waits up to 5 seconds for the daemon to stop answering.
+- **Restarting:** `sentinel restart` stops the daemon the same way, then starts a new one in the background (or just starts one if none was running). Use it after upgrading Sentinel, since a daemon started from the old build keeps running until it's stopped.
 - Prompt files older than 7 days are deleted after each poll.
 
 ## CLI reference
@@ -216,6 +217,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel status [--json]` | PID, home directory, multiplexer, interval, time until next poll, number of PRs, config error |
 | `sentinel reload` | Re-read `config.json` |
 | `sentinel stop` | Stop the daemon |
+| `sentinel restart` | Stop the daemon and start it again |
 | `sentinel skill show` | Print the agent skill |
 | `sentinel skill install` | Install the skill to `~/.claude/skills/sentinel/` and `~/.codex/skills/sentinel/` |
 | `sentinel daemon [--quiet]` | Run the daemon in the foreground |
@@ -229,14 +231,16 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 
 **Main view:**
 - **Header:** multiplexer, poll interval and countdown to the next poll.
-- **Table:** PR, agent, session (with ⏸ when paused), last checked, status (colour-coded) and reason.
+- **Table:** PRs grouped under an `org/repo` heading (the host is added for GitHub Enterprise), groups sorted alphabetically and PRs by number. Each PR is one line, `#123 - title` (the title is refreshed on every poll), then agent, session, agent, session (with ⏸ when paused), last checked, status (colour-coded) and reason.
 - **Details panel:** the selected PR's URL, full session ID, directory, pane ID and agent state.
 
 | Key | Action |
 | --- | --- |
 | `↑`/`↓` or `k`/`j` | Select a PR |
+| `/` | Filter watched PRs: every word must appear in the PR's `org/repo` or title. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `Enter` | Event history for the PR |
 | `n` / `w` | Watch one of your PRs with a new Claude session (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)) |
+| `o` | Open the selected PR in the browser (`open`, or `xdg-open` on Linux) |
 | `c` | Check the selected PR now |
 | `d`, then `y` | Unwatch the selected PR |
 | `p` | Pause or resume deliveries to the PR's agent session |
@@ -249,16 +253,17 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - **Config errors:** an invalid config file, or a daemon running on its last good config, is shown in a red banner.
 - **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`.
 
-**Settings:** every config field is listed with its current value.
+**Settings** open in a dialog over the PR list. Every config field is listed with its current value, one line each (long values are cut short), and the list scrolls to keep the selection visible.
 
 | Key | Action |
 | --- | --- |
 | `Enter`/`Space` | Edit a text or number field inline; cycle an enum (`multiplexer`, `spawn.layout`) |
 | `Enter` (while editing) | Save |
 | `Esc` (while editing) | Cancel |
+| `/` | Filter settings by name: every word must appear in the label or config key. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `e` | Open the selected template (`fixPromptTemplate`, `introPromptTemplate`) in `$VISUAL` or `$EDITOR` (default `vi`) |
 | `r` | Reload config |
-| `Esc`/`q` | Back to the main view |
+| `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
 - Lists (ignored authors, failing conclusions, agent args) are edited as comma-separated text.
 - Values are validated before saving; an invalid value shows an error and leaves the file unchanged.

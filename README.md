@@ -22,7 +22,7 @@ Requires `gh` (authenticated), `claude`, and `rex` or `herdr` on `PATH`. `mise` 
 sentinel                     # open the dashboard (starts the daemon if needed)
 sentinel start               # start the daemon in the background, no dashboard
 sentinel watch <pr>...       # from inside an agent session: hand off PRs
-sentinel list | status | check [<pr>] | unwatch <pr> | reload | stop
+sentinel list | status | check [<pr>] | unwatch <pr> | reload | stop | restart
 ```
 
 Or press `n` in the dashboard to watch one of your open PRs without an agent session. Pick a PR, choose the model, effort and local clone, and Sentinel starts a new Claude session for it, either right away or when the first feedback arrives.
@@ -31,8 +31,8 @@ Or press `n` in the dashboard to watch one of your open PRs without an agent ses
 
 ### TUI keys
 
-`↑/↓` select · `enter` event history · `n` watch one of your PRs · `c` check now · `d` unwatch · `p` pause/resume the session's deliveries · `s` settings · `r` reload config · `S` retry starting the daemon · `q` quit. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`.
-In settings: `enter` edits a field or cycles an enum, and `e` opens a prompt template in `$EDITOR`.
+`↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `c` check now · `d` unwatch · `p` pause/resume the session's deliveries · `s` settings · `r` reload config · `S` retry starting the daemon · `q` quit. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`.
+In settings: `/` filters by name, `enter` edits a field or cycles an enum, and `e` opens a prompt template in `$EDITOR`.
 In the PR picker: type to filter by org, repo, `#number` or title, `↑/↓` to move, `enter` to pick. In the form: `←/→` or `space` changes a value, `e` types a custom model or path, and `enter` on `[ Watch ]` starts the watch.
 
 ## How it works
