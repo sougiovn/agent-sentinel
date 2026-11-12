@@ -3,11 +3,18 @@ export type Layout = "sentinel-tab" | "tab-per-session";
 export interface PaneRef {
   paneId: string;
   tabId: string;
+  /** Id of the home session/workspace the pane lives in. */
+  homeId: string;
 }
 
 export interface CreatePaneOptions {
   /** Name of the Sentinel-owned session/workspace. */
   homeName: string;
+  /**
+   * Id of the home session/workspace from an earlier createPane. Preferred over `homeName`, since agents
+   * running inside it may rename it (Rex tells Claude to label its session).
+   */
+  homeId?: string;
   layout: Layout;
   maxPanesPerTab: number;
   cwd: string;

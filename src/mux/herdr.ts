@@ -39,11 +39,13 @@ export class HerdrMux implements Multiplexer {
 
   async createPane(opts: CreatePaneOptions): Promise<PaneRef> {
     const workspaces = list<{ workspace_id: string; label?: string }>(await this.herdr(["workspace", "list"]), "workspaces");
-    const ws = workspaces.find((w) => w.label === opts.homeName);
+    const ws = workspaces.find((w) => w.workspace_id === opts.homeId) ?? workspaces.find((w) => w.label === opts.homeName);
 
     if (!ws) {
       const out = await this.herdr(["workspace", "create", "--cwd", opts.cwd, "--label", opts.homeName, "--no-focus"]);
-      return this.refFrom(out, opts.label);
+      const homeId = findKey(out, "workspace_id");
+      if (!homeId) throw new Error("herdr workspace create did not return a workspace id");
+      return this.refFrom(out, opts.label, homeId);
     }
 
     const panes = list<HerdrPane>(await this.herdr(["pane", "list", "--workspace", ws.workspace_id]), "panes");
@@ -70,7 +72,7 @@ export class HerdrMux implements Multiplexer {
         const paneId = findKey(out, "pane_id");
         if (!paneId) throw new Error("herdr pane split did not return a pane id");
         await this.run(["herdr", "pane", "rename", paneId, opts.label]);
-        return { paneId, tabId };
+        return { paneId, tabId, homeId: ws.workspace_id };
       }
     }
 
@@ -85,16 +87,16 @@ export class HerdrMux implements Multiplexer {
       opts.label,
       "--no-focus",
     ]);
-    return this.refFrom(out, opts.label);
+    return this.refFrom(out, opts.label, ws.workspace_id);
   }
 
-  private async refFrom(out: unknown, label: string): Promise<PaneRef> {
+  private async refFrom(out: unknown, label: string, homeId: string): Promise<PaneRef> {
     const res = (out as { result?: Record<string, unknown> }).result ?? {};
     const paneId = findKey(res.root_pane, "pane_id") ?? findKey(res, "pane_id");
     const tabId = findKey(res.tab, "tab_id") ?? findKey(res, "tab_id");
     if (!paneId || !tabId) throw new Error("herdr did not return pane/tab ids");
     await this.run(["herdr", "pane", "rename", paneId, label]);
-    return { paneId, tabId };
+    return { paneId, tabId, homeId };
   }
 
   async sendLine(paneId: string, text: string) {

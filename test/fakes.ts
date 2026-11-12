@@ -106,7 +106,7 @@ export class FakeMux implements Multiplexer {
   async createPane(opts: CreatePaneOptions): Promise<PaneRef> {
     const id = `block:${++this.n}`;
     this.panes.set(id, { tab: "window:1", lines: [], opts });
-    return { paneId: id, tabId: "window:1" };
+    return { paneId: id, tabId: "window:1", homeId: opts.homeId ?? "session:home" };
   }
   async sendLine(id: string, text: string) {
     this.panes.get(id)!.lines.push(text);

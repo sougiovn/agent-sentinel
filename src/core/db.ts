@@ -97,6 +97,16 @@ export class Store {
     this.db.close();
   }
 
+  getMeta(key: string): string | null {
+    return this.db.query<{ value: string }, [string]>("SELECT value FROM meta WHERE key = ?").get(key)?.value ?? null;
+  }
+
+  setMeta(key: string, value: string) {
+    this.db
+      .query("INSERT INTO meta (key, value) VALUES ($k, $v) ON CONFLICT(key) DO UPDATE SET value = $v")
+      .run({ k: key, v: value });
+  }
+
   // ---- PRs ----
 
   /** Inserts or replaces the owner of a PR. Returns true if the PR is new. */

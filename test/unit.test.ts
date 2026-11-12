@@ -17,6 +17,8 @@ import { cycleEnum, FIELDS, filterFields, parseValue } from "../src/tui/settings
 import { fakeGit } from "./fakes.ts";
 import type { Exec } from "../src/core/exec.ts";
 import { Store } from "../src/core/db.ts";
+import { RexMux } from "../src/mux/rex.ts";
+import type { CreatePaneOptions } from "../src/mux/mux.ts";
 import { GhCli } from "../src/github/gh.ts";
 import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
 import type { MyPr } from "../src/daemon/protocol.ts";
@@ -437,5 +439,71 @@ describe("settings booleans", () => {
     expect(field.get(cfg)).toBe("on");
     field.set(cfg, cycleEnum(field, cfg));
     expect(cfg.newWatch.startNow).toBe(false);
+  });
+});
+
+describe("rex mux", () => {
+  /** Minimal rex stand-in: sessions hold windows hold blocks; `rename` mimics an agent relabeling its session. */
+  function fakeRex() {
+    const sessions: { session_id: string; label: string; windows: { window_id: string; blocks: string[] }[] }[] = [];
+    let n = 0;
+    const calls: string[][] = [];
+    const ok = (o: unknown) => ({ code: 0, stdout: JSON.stringify(o), stderr: "" });
+    const exec: Exec = async (cmd) => {
+      calls.push(cmd);
+      const a = cmd.slice(1);
+      const arg = (f: string) => a[a.indexOf(f) + 1]!;
+      if (a[0] === "ls") return ok({ sessions: sessions.map(({ session_id, label }) => ({ session_id, label })) });
+      if (a[0] === "new") {
+        const s = { session_id: `session:${++n}`, label: a[1]!, windows: [{ window_id: `window:${++n}`, blocks: [`block:${++n}`] }] };
+        sessions.push(s);
+        return ok({ session_id: s.session_id, initial_windows: [{ window_id: s.windows[0]!.window_id, block_ids: s.windows[0]!.blocks }] });
+      }
+      const sess = () => sessions.find((s) => s.session_id === arg("-s"))!;
+      if (a[0] === "block" && a[1] === "ls")
+        return ok({ blocks: sess().windows.flatMap((w) => w.blocks.map((block_id) => ({ block_id, window_id: w.window_id }))) });
+      if (a[0] === "split") {
+        const w = sess().windows.find((w) => w.blocks.includes(arg("-b")))!;
+        const id = `block:${++n}`;
+        w.blocks.push(id);
+        return ok({ block_ids: [id, arg("-b")] });
+      }
+      if (a[0] === "window" && a[1] === "new") {
+        const w = { window_id: `window:${++n}`, blocks: [`block:${++n}`] };
+        sess().windows.push(w);
+        return ok({ window_id: w.window_id, block_ids: w.blocks });
+      }
+      return ok({});
+    };
+    return { sessions, calls, exec };
+  }
+
+  const opts = (o: Partial<CreatePaneOptions> = {}): CreatePaneOptions => ({
+    homeName: "sentinel",
+    layout: "sentinel-tab",
+    maxPanesPerTab: 4,
+    cwd: "/tmp",
+    label: "claude:x",
+    ...o,
+  });
+
+  test("keeps using the home session after an agent renames it", async () => {
+    const rex = fakeRex();
+    const mux = new RexMux(rex.exec);
+    const first = await mux.createPane(opts());
+    rex.sessions[0]!.label = "kubb5-msw3-pr";
+    const second = await mux.createPane(opts({ homeId: first.homeId }));
+    expect(rex.sessions).toHaveLength(1);
+    expect(second.homeId).toBe(first.homeId);
+    expect(second.tabId).toBe(first.tabId);
+  });
+
+  test("falls back to the label when the stored session is gone", async () => {
+    const rex = fakeRex();
+    const mux = new RexMux(rex.exec);
+    const first = await mux.createPane(opts());
+    const again = await mux.createPane(opts({ homeId: "session:gone" }));
+    expect(rex.sessions).toHaveLength(1);
+    expect(again.homeId).toBe(first.homeId);
   });
 });

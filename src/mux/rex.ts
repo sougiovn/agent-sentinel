@@ -39,11 +39,13 @@ export class RexMux implements Multiplexer {
     return r.code === 0;
   }
 
-  private async findSession(label: string): Promise<string | undefined> {
+  /** Finds the home session by id first: agents inside it rename it, so its label can't be trusted. */
+  private async findSession(id: string | undefined, label: string): Promise<string | undefined> {
     const out = parseJson(await this.rex(["ls", "--json"]), "rex ls") as {
       sessions?: { session_id: string; label?: string }[];
     };
-    return out.sessions?.find((s) => s.label === label)?.session_id;
+    const sessions = out.sessions ?? [];
+    return (sessions.find((s) => s.session_id === id) ?? sessions.find((s) => s.label === label))?.session_id;
   }
 
   private async blocks(sessionId: string): Promise<RexBlock[]> {
@@ -54,7 +56,7 @@ export class RexMux implements Multiplexer {
   }
 
   async createPane(opts: CreatePaneOptions): Promise<PaneRef> {
-    const sessionId = await this.findSession(opts.homeName);
+    const sessionId = await this.findSession(opts.homeId, opts.homeName);
     if (!sessionId) {
       const out = parseJson(
         await this.rex(["new", opts.homeName, "--window", `${opts.homeName}-1`, "-c", opts.cwd, "--json"]),
@@ -62,9 +64,10 @@ export class RexMux implements Multiplexer {
       );
       const paneId = findKey(out, "block_id") ?? (out as { initial_windows?: { block_ids?: string[] }[] }).initial_windows?.[0]?.block_ids?.[0];
       const tabId = findKey(out, "window_id");
-      if (!paneId || !tabId) throw new Error("rex new did not return block/window ids");
+      const homeId = findKey(out, "session_id");
+      if (!paneId || !tabId || !homeId) throw new Error("rex new did not return session/block/window ids");
       await this.label(paneId, opts.label);
-      return { paneId, tabId };
+      return { paneId, tabId, homeId };
     }
 
     const blocks = await this.blocks(sessionId);
@@ -98,7 +101,7 @@ export class RexMux implements Multiplexer {
         );
         const paneId = findKey(out, "block_id") ?? (out as { block_ids?: string[] }).block_ids?.[0];
         if (!paneId) throw new Error("rex split did not return a block id");
-        return { paneId, tabId: windowId };
+        return { paneId, tabId: windowId, homeId: sessionId };
       }
     }
 
@@ -120,7 +123,7 @@ export class RexMux implements Multiplexer {
     const tabId = findKey(out, "window_id");
     if (!paneId || !tabId) throw new Error("rex window new did not return block/window ids");
     await this.label(paneId, opts.label);
-    return { paneId, tabId };
+    return { paneId, tabId, homeId: sessionId };
   }
 
   private async label(paneId: string, label: string) {

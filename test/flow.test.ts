@@ -209,7 +209,9 @@ describe("per-session queue", () => {
     t.gh.comment(ref, { id: 102 });
     await t.daemon.sentinel.tick();
     expect(t.mux.panes.size).toBe(1);
-    expect([...t.mux.panes.values()][0]!.lines[0]).toContain("--resume");
+    const [pane] = [...t.mux.panes.values()];
+    expect(pane!.lines[0]).toContain("--resume");
+    expect(pane!.opts.homeId).toBe("session:home"); // reuses the stored home session, not its (renameable) label
   });
 
   test("paused session holds fixes until resumed", async () => {

@@ -178,14 +178,17 @@ export class Dispatcher {
         );
 
       if (!paneId) {
+        const homeKey = `mux_home:${mux.name}:${cfg.spawn.sessionName}`;
         const ref = await mux.createPane({
           homeName: cfg.spawn.sessionName,
+          homeId: store.getMeta(homeKey) ?? undefined,
           layout: cfg.spawn.layout,
           maxPanesPerTab: cfg.spawn.maxPanesPerTab,
           cwd: session.cwd,
           label: `${session.agent}:${sessionId.slice(0, 8)}`,
         });
         paneId = ref.paneId;
+        store.setMeta(homeKey, ref.homeId);
         store.updateSession(sessionId, { mux: mux.name, pane_id: ref.paneId, tab_id: ref.tabId });
         await mux.sendLine(paneId, launch());
       } else if (session.agent_running && session.started) {
