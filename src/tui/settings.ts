@@ -20,6 +20,10 @@ const f = (
   options?: string[],
 ): Field => ({ key, label, kind, get, set: set as Field["set"], options });
 
+/** A boolean shown as an on/off enum. */
+const bool = (key: string, label: string, get: (c: Config) => boolean, set: (c: Config, v: boolean) => void): Field =>
+  f(key, label, "enum", (c) => (get(c) ? "on" : "off"), (c, v: string) => set(c, v === "on"), ["on", "off"]);
+
 export const FIELDS: Field[] = [
   f("multiplexer", "Multiplexer", "enum", (c) => c.multiplexer, (c, v) => (c.multiplexer = v), ["rex", "herdr"]),
   f("pollIntervalSec", "Poll interval (s)", "int", (c) => c.pollIntervalSec, (c, v) => (c.pollIntervalSec = v)),
@@ -38,6 +42,15 @@ export const FIELDS: Field[] = [
   f("spawn.busyTimeoutMin", "Busy timeout (min)", "int", (c) => c.spawn.busyTimeoutMin, (c, v) => (c.spawn.busyTimeoutMin = v)),
   f("spawn.sessionName", "Sentinel session name", "string", (c) => c.spawn.sessionName, (c, v) => (c.spawn.sessionName = v)),
   f("fixPromptTemplate", "Fix prompt template", "template", (c) => c.fixPromptTemplate, (c, v) => (c.fixPromptTemplate = v)),
+  bool("newWatch.onlyMine", "New watch: only my PRs", (c) => c.newWatch.onlyMine, (c, v) => (c.newWatch.onlyMine = v)),
+  f("newWatch.repoRoots", "New watch: repo roots", "list", (c) => c.newWatch.repoRoots, (c, v) => (c.newWatch.repoRoots = v)),
+  f("newWatch.model", "New watch: default model", "string", (c) => c.newWatch.model, (c, v) => (c.newWatch.model = v)),
+  f("newWatch.models", "New watch: model choices", "list", (c) => c.newWatch.models, (c, v) => (c.newWatch.models = v)),
+  f("newWatch.effort", "New watch: default effort", "string", (c) => c.newWatch.effort, (c, v) => (c.newWatch.effort = v)),
+  f("newWatch.efforts", "New watch: effort choices", "list", (c) => c.newWatch.efforts, (c, v) => (c.newWatch.efforts = v)),
+  bool("newWatch.startNow", "New watch: start session now", (c) => c.newWatch.startNow, (c, v) => (c.newWatch.startNow = v)),
+  bool("newWatch.includeExisting", "New watch: act on existing", (c) => c.newWatch.includeExisting, (c, v) => (c.newWatch.includeExisting = v)),
+  f("introPromptTemplate", "New session intro prompt", "template", (c) => c.introPromptTemplate, (c, v) => (c.introPromptTemplate = v)),
 ];
 
 export function displayValue(field: Field, c: Config): string {

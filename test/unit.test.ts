@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, loadConfig, parseConfig, saveConfig } from "../src/core/config.ts";
@@ -11,6 +11,10 @@ import { newItems, normalize } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq } from "../src/spawn/launcher.ts";
 import { getPaths } from "../src/core/paths.ts";
 import { cycleEnum, FIELDS, parseValue } from "../src/tui/settings.ts";
+import { fakeGit } from "./fakes.ts";
+import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
+import type { MyPr } from "../src/daemon/protocol.ts";
+import { filterPrs } from "../src/tui/pr-filter.ts";
 
 describe("pr-ref", () => {
   test("parses URLs and short forms", () => {
@@ -178,5 +182,95 @@ describe("tui settings", () => {
     expect(parseValue(authors, "@me, bot ,")).toEqual(["@me", "bot"]);
     const mux = FIELDS.find((f) => f.key === "multiplexer")!;
     expect(cycleEnum(mux, defaultConfig())).toBe("herdr");
+  });
+});
+
+describe("new sessions", () => {
+  const paths = getPaths(mkdtempSync(join(tmpdir(), "launch-")));
+  const self = ["/bin/sentinel"];
+  test("claude starts a new session with --session-id and passes model/effort", () => {
+    const cmd = launchCommand(
+      { agent: "claude", sessionId: "u-1", cwd: "/w", promptFile: "/p/f.md", newSession: true, model: "opus", effort: "high" },
+      defaultConfig(),
+      paths,
+      self,
+    );
+    expect(cmd).toContain(`--session-id 'u-1'`);
+    expect(cmd).not.toContain("--resume");
+    expect(cmd).toContain(`'--model' 'opus' '--effort' 'high'`);
+  });
+  test("resume keeps model/effort; default omits the flags", () => {
+    const base = { agent: "claude" as const, sessionId: "u-1", cwd: "/w", promptFile: "/p/f.md" };
+    expect(launchCommand({ ...base, model: "sonnet", effort: "low" }, defaultConfig(), paths, self)).toContain(
+      `--resume 'u-1' --settings`,
+    );
+    const dflt = launchCommand({ ...base, model: "default", effort: null }, defaultConfig(), paths, self);
+    expect(dflt).not.toContain("--model");
+    expect(dflt).not.toContain("--effort");
+  });
+  test("codex maps model/effort and refuses new sessions", () => {
+    const base = { agent: "codex" as const, sessionId: "t-1", cwd: "/w", promptFile: "/p/f.md" };
+    expect(launchCommand({ ...base, model: "gpt-5", effort: "high" }, defaultConfig(), paths, self)).toContain(
+      `'-m' 'gpt-5' '-c' 'model_reasoning_effort="high"'`,
+    );
+    expect(() => launchCommand({ ...base, newSession: true }, defaultConfig(), paths, self)).toThrow("only start new sessions for claude");
+  });
+});
+
+describe("repo-locate", () => {
+  test("normalizes ssh and https remotes", () => {
+    expect(normalizeRemote("git@github.com:Acme/Web.git\n")).toBe("github.com/acme/web");
+    expect(normalizeRemote("https://github.com/acme/web")).toBe("github.com/acme/web");
+    expect(normalizeRemote("https://github.com/acme/web.git/")).toBe("github.com/acme/web");
+    expect(normalizeRemote("ssh://git@ghe.corp.io:22/acme/web.git")).toBe("ghe.corp.io/acme/web");
+    expect(normalizeRemote("not a url")).toBeNull();
+  });
+
+  test("finds a clone two levels deep and prefers one named after the repo", async () => {
+    const root = mkdtempSync(join(tmpdir(), "roots-"));
+    for (const d of ["org/web", "web-fork", "other"]) mkdirSync(join(root, d, ".git"), { recursive: true });
+    const loc = new RepoLocator(
+      fakeGit({
+        [join(root, "org/web")]: "git@github.com:acme/web.git",
+        [join(root, "web-fork")]: "https://github.com/acme/web",
+        [join(root, "other")]: "https://github.com/acme/other",
+      }),
+    );
+    const repo = { host: "github.com", owner: "acme", repo: "web" };
+    expect(await loc.suggest(repo, [root])).toBe(join(root, "org/web"));
+    expect(await loc.suggest({ ...repo, repo: "missing" }, [root])).toBeNull();
+
+    expect((await loc.validate(join(root, "org/web"), repo)).warning).toBeUndefined();
+    expect((await loc.validate(join(root, "other"), repo)).warning).toContain("not acme/web");
+    expect((await loc.validate(join(root, "nope"), repo)).error).toContain("not a directory");
+    mkdirSync(join(root, "plain"));
+    expect((await loc.validate(join(root, "plain"), repo)).error).toContain("not a git repository");
+  });
+});
+
+describe("pr filter", () => {
+  const pr = (owner: string, repo: string, number: number, title: string): MyPr => ({
+    id: `github.com/${owner}/${repo}#${number}`,
+    host: "github.com",
+    owner,
+    repo,
+    number,
+    title,
+    url: "",
+    isDraft: false,
+    updatedAt: "",
+    watched: false,
+  });
+  const prs = [pr("acme", "web", 12, "Fix login redirect"), pr("acme", "api", 345, "Add rate limits"), pr("other", "web", 7, "Bump deps")];
+  const ids = (q: string) => filterPrs(prs, q).map((p) => p.number);
+  test("matches org, repo, number and title tokens", () => {
+    expect(ids("")).toEqual([12, 345, 7]);
+    expect(ids("acme")).toEqual([12, 345]);
+    expect(ids("WEB")).toEqual([12, 7]);
+    expect(ids("#345")).toEqual([345]);
+    expect(ids("7")).toEqual([7]);
+    expect(ids("acme login")).toEqual([12]);
+    expect(ids("acme/api")).toEqual([345]);
+    expect(ids("nothing")).toEqual([]);
   });
 });
