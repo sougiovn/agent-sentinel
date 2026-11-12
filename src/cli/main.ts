@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -8,7 +8,7 @@ import { ensureHome, getPaths } from "../core/paths.ts";
 import type { AgentKind } from "../core/types.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
 import { Client, DaemonUnavailableError } from "./client.ts";
-import { startDaemon } from "./daemon-control.ts";
+import { startDaemon, stopDaemon } from "./daemon-control.ts";
 import { detectAgent, hookSessionId } from "./detect.ts";
 import { formatList, formatStatus } from "./format.ts";
 
@@ -24,6 +24,7 @@ Usage:
   sentinel check [<pr>]         Poll now
   sentinel status [--json]      Daemon status
   sentinel stop                 Stop the daemon
+  sentinel restart              Restart the daemon (e.g. after upgrading Sentinel)
   sentinel reload               Reload config.json
   sentinel skill show|install   Print or install the agent skill
   sentinel daemon               Run the daemon in the foreground
@@ -132,22 +133,16 @@ async function main(argv: string[]) {
       return;
     }
     case "stop": {
-      try {
-        await client.call("stop", {});
-        console.log("Sentinel daemon stopped.");
-      } catch (e) {
-        if (!(e instanceof DaemonUnavailableError)) throw e;
-        if (existsSync(paths.pid)) {
-          const pid = Number(readFileSync(paths.pid, "utf8"));
-          try {
-            process.kill(pid, "SIGTERM");
-            console.log(`Sent SIGTERM to ${pid}.`);
-          } catch {
-            unlinkSync(paths.pid);
-            console.log("Daemon not running (removed stale pidfile).");
-          }
-        } else console.log("Daemon not running.");
-      }
+      const r = await stopDaemon(paths, client);
+      console.log(r === "not-running" ? "Daemon not running." : "Sentinel daemon stopped.");
+      return;
+    }
+    case "restart": {
+      const r = await stopDaemon(paths, client);
+      await startDaemon(paths, client);
+      const st = await client.call("status", {});
+      console.log(r === "not-running" ? "Daemon wasn't running; started it." : "Sentinel daemon restarted.");
+      console.log(formatStatus(st));
       return;
     }
     case "reload": {
