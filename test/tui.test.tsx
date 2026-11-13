@@ -307,3 +307,39 @@ test("TUI asks to start the daemon before opening the PR picker", async () => {
   expect(f).not.toContain("Watch a PR");
   t.renderer.destroy();
 });
+
+test("TUI shows picked-up Jira tickets and dismisses one", async () => {
+  const t0 = makeDaemon();
+  const cfg = defaultConfig();
+  cfg.jira.enabled = true;
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  t0.jira.add("CP-7", { summary: "Add audit log" });
+  await t0.daemon.runTicketPoll();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 140, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  let f = await frame();
+  expect(f).toContain('Jira tickets · label "sentinel"');
+  expect(f).toContain("CP-7 - Add audit log");
+  expect(f).toContain("started");
+
+  t.mockInput.pressKey("t");
+  f = await frame();
+  expect(f).toContain("o open ticket");
+  expect(f).toContain("https://acme.atlassian.net/browse/CP-7");
+
+  t.mockInput.pressKey("d");
+  f = await frame();
+  expect(f).toContain("Dismiss CP-7?");
+  t.mockInput.pressKey("y");
+  f = await frame();
+  expect(t0.store.getTicket("CP-7")!.dismissed).toBe(1);
+  expect(f).not.toContain("CP-7 - Add audit log");
+  t.renderer.destroy();
+});

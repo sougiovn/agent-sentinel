@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { loadConfig, saveConfig, type Config } from "../core/config.ts";
 import type { Paths } from "../core/paths.ts";
 import type { EventRow } from "../core/types.ts";
-import type { MyPr, NewWatchDefaults, PrListEntry, RpcMethod, RpcMethods, StatusInfo } from "../daemon/protocol.ts";
+import type { MyPr, NewWatchDefaults, PrListEntry, RpcMethod, RpcMethods, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
 import { Client } from "../cli/client.ts";
 import { startDaemon as startDaemonProcess } from "../cli/daemon-control.ts";
 import { openUrl as defaultOpenUrl } from "../cli/open-url.ts";
@@ -32,7 +32,13 @@ const STATUS_COLOR: Record<string, string> = {
   fix_running: "#f1c40f",
   spawn_failed: "#e74c3c",
   error: "#e74c3c",
+  queued: "#3498db",
+  started: "#f1c40f",
+  transition_failed: "#e67e22",
 };
+
+/** Most Jira ticket rows shown before the list scrolls. */
+const TICKET_ROWS = 6;
 
 /**
  * Waits a tick. Call it before focusing an input from a key handler, or the key that
@@ -71,6 +77,13 @@ export function App(props: AppProps) {
   const [listFiltering, setListFiltering] = createSignal(false);
   /** Watched PRs after the `/` filter; `sel` indexes this list. */
   const shownPrs = () => filterWatched(prs(), listQuery());
+  const [tickets, setTickets] = createSignal<TicketListEntry[]>([]);
+  /** The Jira tickets list has the selection instead of the PR list. */
+  const [ticketFocus, setTicketFocus] = createSignal(false);
+  const [ticketSel, setTicketSel] = createSignal(0);
+  const [confirmDismiss, setConfirmDismiss] = createSignal(false);
+  const currentTicket = () => (ticketFocus() ? tickets()[ticketSel()] : undefined);
+  const showTickets = () => !!status()?.jira?.enabled || tickets().length > 0;
   const [history, setHistory] = createSignal<EventRow[]>([]);
   const [flash, setFlash] = createSignal<{ text: string; error: boolean } | null>(null);
   const [refreshing, setRefreshing] = createSignal(false);
@@ -116,6 +129,14 @@ export function App(props: AppProps) {
       const selectedId = shownPrs()[sel()]?.id;
       setPrs(sortByGroup(list));
       setOnline(true);
+      // An older daemon has no ticket support; treat that as no tickets.
+      const ts = await client.call("tickets", {}, 3000).catch(() => [] as TicketListEntry[]);
+      const selectedKey = tickets()[ticketSel()]?.key;
+      setTickets(ts);
+      const keptTicket = selectedKey ? ts.findIndex((t) => t.key === selectedKey) : -1;
+      if (keptTicket >= 0) setTicketSel(keptTicket);
+      else if (ticketSel() >= ts.length) setTicketSel(Math.max(0, ts.length - 1));
+      if (ts.length === 0) setTicketFocus(false);
       const shown = shownPrs();
       const kept = selectedId ? shown.findIndex((p) => p.id === selectedId) : -1;
       if (kept >= 0) setSel(kept);
@@ -158,7 +179,11 @@ export function App(props: AppProps) {
     try {
       const r = await client.call("refresh", {}, 600_000);
       if (!r.accepted) notify(r.error ?? "Refresh refused", true);
-      else notify(r.checked.length ? `Refreshed ${r.checked.length} PR${r.checked.length === 1 ? "" : "s"}` : "Refreshed (no PRs watched)");
+      else {
+        const prsMsg = r.checked.length ? `Refreshed ${r.checked.length} PR${r.checked.length === 1 ? "" : "s"}` : "Refreshed (no PRs watched)";
+        const ticketsMsg = status()?.jira?.enabled ? ` · ${(r.tickets ?? []).length} Jira ticket(s) found` : "";
+        notify(prsMsg + ticketsMsg);
+      }
     } catch (e) {
       notify((e as Error).message, true);
     } finally {
@@ -411,6 +436,60 @@ export function App(props: AppProps) {
         setSel(0);
         return;
       }
+      if (confirmDismiss()) {
+        setConfirmDismiss(false);
+        const t = currentTicket();
+        if (key.name === "y" && t) {
+          await client.call("dismissTicket", { key: t.key }).catch((e: Error) => notify(e.message, true));
+          notify(`Dismissed ${t.key}`);
+          await refresh();
+        }
+        return;
+      }
+      if (key.name === "t" && !confirmDelete()) {
+        if (tickets().length === 0) notify(showTickets() ? "No Jira tickets picked up yet" : "Jira tickets are off (jira.enabled in settings)", true);
+        else setTicketFocus((f) => !f);
+        return;
+      }
+      if (ticketFocus() && !confirmDelete()) {
+        const t = currentTicket();
+        switch (key.name) {
+          case "escape":
+            setTicketFocus(false);
+            return;
+          case "up":
+          case "k":
+            setTicketSel((i) => Math.max(0, i - 1));
+            return;
+          case "down":
+          case "j":
+            setTicketSel((i) => Math.min(tickets().length - 1, i + 1));
+            return;
+          case "return":
+          case "c":
+            return;
+          case "o":
+            if (!t) return;
+            try {
+              (props.openUrl ?? defaultOpenUrl)(t.url);
+              notify(`Opened ${t.url}`);
+            } catch (e) {
+              notify(`Could not open ${t.url}: ${(e as Error).message}`, true);
+            }
+            return;
+          case "d":
+            if (t) setConfirmDismiss(true);
+            return;
+          case "p": {
+            if (!t?.session) return;
+            const paused = !t.session.paused;
+            await client.call("pause", { sessionId: t.session_id, paused }).catch((e: Error) => notify(e.message, true));
+            notify(`${paused ? "Paused" : "Resumed"} session ${t.session_id.slice(0, 8)}`);
+            await refresh();
+            return;
+          }
+        }
+      }
       if (confirmDelete()) {
         setConfirmDelete(false);
         if (key.name === "y" && current()) {
@@ -597,6 +676,13 @@ export function App(props: AppProps) {
     return { repo, title: Math.max(10, w - repo - 7 - 16) };
   };
 
+  /** The Jira tickets that fit in their box, scrolled so the selection stays visible. */
+  const ticketWindow = () => {
+    const all = tickets();
+    const start = Math.max(0, Math.min(ticketSel() - TICKET_ROWS + 1, all.length - TICKET_ROWS));
+    return all.slice(start, start + TICKET_ROWS);
+  };
+
   /** The slice of filtered PRs that fits on screen, scrolled so the selection stays visible. */
   const pickWindow = () => {
     const rows = Math.max(1, pickerHeight() - 4); // border, filter line, count line
@@ -608,6 +694,7 @@ export function App(props: AppProps) {
   const footer = () => {
     if (editing() !== null || formEditing() !== null) return "enter save · esc cancel";
     if (confirmDelete()) return `Unwatch ${current()?.id}? y to confirm, any key to cancel`;
+    if (confirmDismiss()) return `Dismiss ${currentTicket()?.key}? It won't be picked up again. y to confirm, any key to cancel`;
     switch (view()) {
       case "history":
         return "esc back";
@@ -622,10 +709,11 @@ export function App(props: AppProps) {
         return "↑↓ move · ←→/space change · e type a model or path · enter on [ Watch ] to start · esc back";
       default:
         if (listFiltering()) return "type to filter by repo or title · ↑↓ move · enter done · esc clear";
+        if (ticketFocus()) return "↑↓ move · o open ticket · d dismiss · p pause/resume · t/esc back to PRs · r refresh all · q quit";
         if (listQuery())
           return "↑↓ move · enter history · o open · / change filter · esc clear filter · c check · r refresh · d unwatch · p pause";
         return online()
-          ? "↑↓ move · / filter · enter history · o open · n watch a PR · c check now · r refresh all · d unwatch · p pause/resume · s settings · R reload · q quit"
+          ? `↑↓ move · / filter · enter history · o open · n watch a PR · c check now · r refresh all · d unwatch · p pause/resume${showTickets() ? " · t tickets" : ""} · s settings · R reload · q quit`
           : "S start daemon · R reload config · q quit";
     }
   };
@@ -640,6 +728,10 @@ export function App(props: AppProps) {
           {online() && status()
             ? `${status()!.multiplexer} · every ${status()!.pollIntervalSec}s · ${
                 status()!.nextPollAt ? `next in ${Math.max(0, Math.round((status()!.nextPollAt! - Date.now()) / 1000))}s` : "polling…"
+              }${
+                status()!.jira?.enabled
+                  ? ` · jira ${status()!.jira.nextPollAt ? `in ${Math.max(0, Math.round((status()!.jira.nextPollAt! - Date.now()) / 1000))}s` : "polling…"}`
+                  : ""
               }`
             : "daemon offline"}
         </text>
@@ -694,7 +786,7 @@ export function App(props: AppProps) {
                         <b>{prGroup(pr.id)}</b>
                       </text>
                     </Show>
-                    <box flexDirection="row" flexShrink={0} backgroundColor={i() === sel() ? "#2c3e50" : undefined}>
+                    <box flexDirection="row" flexShrink={0} backgroundColor={i() === sel() && !ticketFocus() ? "#2c3e50" : undefined}>
                     <text>
                       {pad(`  ${prLine(pr)}`, widths().pr)} {pad(pr.agent, widths().agent)}{" "}
                       {pad(pr.session_id.slice(0, 8) + (pr.session?.paused ? " ⏸" : ""), widths().session)}{" "}
@@ -708,7 +800,52 @@ export function App(props: AppProps) {
               </For>
             </Show>
           </box>
-          <Show when={current()}>
+          <Show when={showTickets()}>
+            <box
+              flexDirection="column"
+              border
+              borderColor={ticketFocus() ? "#2ecc71" : undefined}
+              title={` Jira tickets · label "${status()?.jira?.label ?? ""}" `}
+              flexShrink={0}
+              paddingLeft={1}
+              paddingRight={1}
+            >
+              <Show when={status()?.jira?.error}>
+                <text fg="#e74c3c">Jira poll failed: {status()!.jira.error}</text>
+              </Show>
+              <Show
+                when={tickets().length > 0}
+                fallback={<text fg="#7f8c8d">No tickets picked up yet. Assign yourself a ticket and add the label to start an agent on it.</text>}
+              >
+                <For each={ticketWindow()}>
+                  {(t) => (
+                    <box flexDirection="row" flexShrink={0} backgroundColor={ticketFocus() && t === currentTicket() ? "#2c3e50" : undefined}>
+                      <text>
+                        {pad(`${t.key} - ${t.summary ?? ""}`, widths().pr)} {pad("claude", widths().agent)}{" "}
+                        {pad(t.session_id.slice(0, 8) + (t.session?.paused ? " ⏸" : ""), widths().session)}{" "}
+                        {pad(ago(t.picked_at), widths().checked)}{" "}
+                      </text>
+                      <text fg={STATUS_COLOR[t.last_status] ?? "#ecf0f1"}>{pad(t.last_status, widths().status)} </text>
+                      <text fg="#bdc3c7">{pad((t.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
+                    </box>
+                  )}
+                </For>
+              </Show>
+            </box>
+          </Show>
+          <Show when={currentTicket()}>
+            <box border title=" Details " paddingLeft={1} flexDirection="column">
+              <text>
+                {currentTicket()!.url} · session {currentTicket()!.session_id}
+              </text>
+              <text fg="#7f8c8d">
+                cwd {currentTicket()!.session?.cwd ?? currentTicket()!.cwd} · pane {currentTicket()!.session?.pane_id ?? "none"} · agent{" "}
+                {currentTicket()!.session?.state ?? "?"}
+                {currentTicket()!.session?.paused ? " (paused)" : ""}
+              </text>
+            </box>
+          </Show>
+          <Show when={!ticketFocus() && current()}>
             <box border title=" Details " paddingLeft={1} flexDirection="column">
               <text>
                 {current()!.url} · session {current()!.session_id}
