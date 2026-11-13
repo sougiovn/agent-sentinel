@@ -419,6 +419,7 @@ describe("store migrations", () => {
     const file = join(mkdtempSync(join(tmpdir(), "db-")), "sentinel.db");
     const old = new Store(file);
     old.db.exec(`
+      DROP TABLE tickets;
       ALTER TABLE prs DROP COLUMN title;
       ALTER TABLE sessions DROP COLUMN model;
       ALTER TABLE sessions DROP COLUMN effort;

@@ -9,6 +9,7 @@ import type { Exec } from "../src/core/exec.ts";
 import type { EvalInput } from "../src/evaluator/prompt.ts";
 import type { Evaluator, Verdict } from "../src/evaluator/evaluator.ts";
 import type { GhClient, GhComment, GhCheck, GhPrView, ListPrsOptions, PrActivity, PrSummary } from "../src/github/gh.ts";
+import type { JiraClient, Ticket } from "../src/jira/acli.ts";
 import { MuxUnavailableError, type CreatePaneOptions, type Multiplexer, type PaneRef } from "../src/mux/mux.ts";
 
 export class FakeGh implements GhClient {
@@ -126,14 +127,46 @@ export function fakeGit(origins: Record<string, string> = {}): Exec {
   };
 }
 
+export class FakeJira implements JiraClient {
+  tickets: Ticket[] = [];
+  searches: string[] = [];
+  transitions: { key: string; status: string }[] = [];
+  failSearch: Error | null = null;
+  failTransition: Error | null = null;
+
+  add(key: string, patch: Partial<Ticket> = {}) {
+    this.tickets.push({
+      key,
+      summary: `Summary of ${key}`,
+      status: "To Do",
+      description: `Do the ${key} thing`,
+      url: `https://acme.atlassian.net/browse/${key}`,
+      ...patch,
+    });
+  }
+  async search(jql: string) {
+    this.searches.push(jql);
+    if (this.failSearch) throw this.failSearch;
+    return structuredClone(this.tickets);
+  }
+  async transition(key: string, status: string) {
+    if (this.failTransition) throw this.failTransition;
+    this.transitions.push({ key, status });
+    const t = this.tickets.find((x) => x.key === key);
+    if (t) t.status = status;
+  }
+}
+
 export function makeDaemon(opts: { now?: () => number; exec?: Exec } = {}) {
   const home = mkdtempSync(join(tmpdir(), "sentinel-test-"));
   const paths = getPaths(home);
   const gh = new FakeGh();
   const evaluator = new FakeEvaluator();
   const mux = new FakeMux();
+  const jira = new FakeJira();
   const daemon = new Daemon(paths, {
     gh,
+    jira,
     evaluator,
     muxFactory: () => mux,
     noTimer: true,
@@ -141,5 +174,5 @@ export function makeDaemon(opts: { now?: () => number; exec?: Exec } = {}) {
     now: opts.now,
     exec: opts.exec ?? fakeGit(),
   });
-  return { daemon, gh, evaluator, mux, paths, store: daemon.store };
+  return { daemon, gh, evaluator, mux, jira, paths, store: daemon.store };
 }

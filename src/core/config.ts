@@ -23,8 +23,27 @@ Get familiar with it:
 Then stop and wait. Sentinel will resume this session with review comments and failing checks that need fixing.
 - Never reply to, react to, or resolve comments written by humans.`;
 
+export const DEFAULT_TICKET_TEMPLATE = `Sentinel started this session to work on the Jira ticket {{key}}: {{summary}}
+{{url}}
+
+Ticket description:
+{{description}}
+
+Where to work:
+- You are in {{cwd}}, which holds the user's local repositories. Work out from the ticket which repository it belongs to and work there.
+- If you are not sure which repository to use, or it isn't available locally, stop and ask the user for instructions. Don't guess and don't clone without asking.
+
+What to do:
+{{modeInstructions}}
+
+Rules:
+- Never reply to, react to, or resolve comments written by humans.`;
+
 /** "default" in model/effort settings means the flag is omitted and the agent decides. */
 export const AGENT_DEFAULT = "default";
+
+export const TICKET_MODES = ["pr-watch", "pr", "plan"] as const;
+export type TicketMode = (typeof TICKET_MODES)[number];
 
 export const ConfigSchema = z.object({
   multiplexer: z.enum(["rex", "herdr"]).default("rex"),
@@ -74,6 +93,27 @@ export const ConfigSchema = z.object({
       startNow: z.boolean().default(true),
       /** Act on comments and failing checks that already exist when the watch starts. */
       includeExisting: z.boolean().default(true),
+    })
+    .prefault({}),
+  /** Jira tickets (read through the Atlassian CLI) that Sentinel starts new agent sessions for. */
+  jira: z
+    .object({
+      enabled: z.boolean().default(false),
+      command: z.string().min(1).default("acli"),
+      pollIntervalSec: z.number().int().min(60).default(600),
+      /** Tickets must carry this label to be picked up. */
+      label: z.string().min(1).default("sentinel"),
+      /** Ticket statuses that are picked up. */
+      statuses: z.array(z.string().min(1)).min(1).default(["To Do", "In Progress"]),
+      /** Directory the agent starts in; it works out the repository from the ticket. */
+      cwd: z.string().min(1).default("~/work"),
+      model: z.string().min(1).default(AGENT_DEFAULT),
+      effort: z.string().min(1).default(AGENT_DEFAULT),
+      /** pr-watch: implement, open a PR and hand it to Sentinel. pr: implement and open a PR. plan: plan and wait. */
+      mode: z.enum(TICKET_MODES).default("pr-watch"),
+      /** Status to move a ticket to once its agent has started. "" = don't transition. */
+      transitionTo: z.string().default("In Progress"),
+      promptTemplate: z.string().min(1).default(DEFAULT_TICKET_TEMPLATE),
     })
     .prefault({}),
   /** First prompt for a session started with "start now" when there is no feedback to fix yet. */

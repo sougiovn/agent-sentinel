@@ -1,4 +1,4 @@
-import type { EventRow, PrRow, SessionRow } from "../core/types.ts";
+import type { EventRow, PrRow, SessionRow, TicketRow } from "../core/types.ts";
 import type { WatchRequest, WatchResult } from "./sentinel.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
 
@@ -11,6 +11,20 @@ export interface StatusInfo {
   nextPollAt: number | null;
   prs: number;
   configError: string | null;
+  jira: {
+    enabled: boolean;
+    label: string;
+    pollIntervalSec: number;
+    nextPollAt: number | null;
+    /** Picked-up tickets that aren't dismissed. */
+    tickets: number;
+    /** Error from the last Jira poll, if it failed. */
+    error: string | null;
+  };
+}
+
+export interface TicketListEntry extends TicketRow {
+  session: SessionRow | null;
 }
 
 export interface PrListEntry extends PrRow {
@@ -60,6 +74,8 @@ export interface RefreshResult {
   retryAfterSec?: number;
   /** PRs included in the pass; empty when refused. */
   checked: string[];
+  /** Jira tickets the search returned; empty when refused or Jira is disabled. */
+  tickets: string[];
   /** When the next scheduled poll is due, once the pass has finished. */
   nextPollAt: number | null;
 }
@@ -76,6 +92,9 @@ export interface RpcMethods {
   unwatch: [{ pr: string }, { removed: boolean }];
   check: [{ pr?: string }, { checked: string[] }];
   refresh: [Record<string, never>, RefreshResult];
+  tickets: [Record<string, never>, TicketListEntry[]];
+  dismissTicket: [{ key: string }, { removed: boolean }];
+  pollTickets: [Record<string, never>, { tickets: string[] }];
   history: [{ pr: string }, EventRow[]];
   signal: [{ sessionId: string; signal: HookSignal }, { known: boolean }];
   pause: [{ sessionId: string; paused: boolean }, { ok: true }];

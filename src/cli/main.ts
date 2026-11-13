@@ -10,9 +10,9 @@ import type { HookSignal } from "../spawn/launcher.ts";
 import { Client, DaemonUnavailableError } from "./client.ts";
 import { startDaemon, stopDaemon } from "./daemon-control.ts";
 import { detectAgent, hookSessionId } from "./detect.ts";
-import { formatList, formatStatus } from "./format.ts";
+import { formatList, formatStatus, formatTickets } from "./format.ts";
 
-const HELP = `sentinel — watches PRs for AI agent sessions and resumes them to fix feedback
+const HELP = `sentinel — watches PRs for AI agent sessions and resumes them to fix feedback, and starts agents for labelled Jira tickets
 
 Usage:
   sentinel                      Open the dashboard (starts the daemon if needed)
@@ -22,6 +22,9 @@ Usage:
   sentinel unwatch <pr>         Stop watching a PR
   sentinel list [--json]        List watched PRs
   sentinel check [<pr>]         Poll now
+  sentinel tickets [--json]     List Jira tickets Sentinel picked up
+  sentinel tickets check        Poll Jira now
+  sentinel tickets dismiss <key>  Hide a ticket (it is still never picked up again)
   sentinel status [--json]      Daemon status
   sentinel stop                 Stop the daemon
   sentinel restart              Restart the daemon (e.g. after upgrading Sentinel)
@@ -120,6 +123,22 @@ async function main(argv: string[]) {
     case "list": {
       const list = await client.call("list", {});
       console.log(rest.includes("--json") ? JSON.stringify(list, null, 2) : formatList(list));
+      return;
+    }
+    case "tickets": {
+      if (rest[0] === "check") {
+        const r = await client.call("pollTickets", {}, 600_000);
+        console.log(r.tickets.length ? `Tickets picked up: ${r.tickets.join(", ")}` : "No tickets picked up");
+        return;
+      }
+      if (rest[0] === "dismiss") {
+        if (!rest[1]) die("tickets dismiss needs a ticket key");
+        const r = await client.call("dismissTicket", { key: rest[1] });
+        console.log(r.removed ? `Dismissed ${rest[1]}` : `Not tracking ${rest[1]}`);
+        return;
+      }
+      const list = await client.call("tickets", {});
+      console.log(rest.includes("--json") ? JSON.stringify(list, null, 2) : formatTickets(list));
       return;
     }
     case "check": {

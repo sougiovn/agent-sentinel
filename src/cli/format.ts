@@ -1,5 +1,5 @@
 import { fromPrId } from "../core/pr-ref.ts";
-import type { PrListEntry, StatusInfo } from "../daemon/protocol.ts";
+import type { PrListEntry, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
 
 /** `[org/repo/123]`; the host is shown only for GitHub Enterprise PRs. */
 export function prTag(id: string): string {
@@ -46,6 +46,12 @@ export function formatStatus(st: StatusInfo): string {
     `multiplexer ${st.multiplexer} · poll every ${st.pollIntervalSec}s · ${st.prs} PR(s) watched`,
   ];
   if (st.nextPollAt) lines.push(`next poll in ${Math.max(0, Math.round((st.nextPollAt - Date.now()) / 1000))}s`);
+  // `jira` is missing when talking to a daemon from before Jira support.
+  if (st.jira?.enabled) {
+    const next = st.jira.nextPollAt ? ` · next in ${Math.max(0, Math.round((st.jira.nextPollAt - Date.now()) / 1000))}s` : "";
+    lines.push(`jira: label "${st.jira.label}" · poll every ${st.jira.pollIntervalSec}s · ${st.jira.tickets} ticket(s) picked up${next}`);
+    if (st.jira.error) lines.push(`jira error: ${st.jira.error}`);
+  } else if (st.jira) lines.push("jira: off");
   if (st.configError) lines.push(`config error (using last good config): ${st.configError}`);
   return lines.join("\n");
 }
@@ -64,4 +70,23 @@ export function formatList(list: PrListEntry[]): string {
   const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
   const fmt = (r: string[]) => r.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
   return [fmt(head), ...rows.map(fmt)].join("\n");
+}
+
+function table(head: string[], rows: string[][]): string {
+  const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
+  const fmt = (r: string[]) => r.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
+  return [fmt(head), ...rows.map(fmt)].join("\n");
+}
+
+export function formatTickets(list: TicketListEntry[]): string {
+  if (list.length === 0) return "No Jira tickets picked up.";
+  const rows = list.map((t) => [
+    t.key,
+    (t.summary ?? "").slice(0, 50),
+    t.session_id.slice(0, 8),
+    ago(t.picked_at),
+    t.last_status,
+    (t.last_reason ?? "").replace(/\s+/g, " ").slice(0, 60),
+  ]);
+  return table(["TICKET", "SUMMARY", "SESSION", "PICKED", "STATUS", "REASON"], rows);
 }

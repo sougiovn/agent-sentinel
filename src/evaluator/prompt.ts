@@ -1,3 +1,4 @@
+import type { TicketMode } from "../core/config.ts";
 import type { Item } from "../core/types.ts";
 import { isBot } from "../github/snapshot.ts";
 import type { Layout } from "../mux/mux.ts";
@@ -92,4 +93,33 @@ export function rexNamingNote(layout: Layout): string {
   return layout === "sentinel-tab"
     ? `${base} This tab is shared with other agents too, so don't rename it either (no \`rex window rename\`).`
     : `${base} To name your work, rename only your tab: \`rex window rename -s "$REX_SESSION" "$(rex block inspect "$REX_BLOCK" -s "$REX_SESSION" --json | jq -r .block.window_id)" <label>\`.`;
+}
+
+/** What the agent does with a ticket, per `jira.mode`. Fills `{{modeInstructions}}` in the ticket template. */
+export const MODE_INSTRUCTIONS: Record<TicketMode, string> = {
+  "pr-watch": `- Implement the ticket on a new branch, commit, push, and open a pull request that links the ticket.
+- Then hand the PR to Sentinel from this session: \`sentinel watch <pr-url>\`. Sentinel will resume this session with review comments and failing checks.`,
+  pr: `- Implement the ticket on a new branch, commit, push, and open a pull request that links the ticket.
+- Then stop and tell the user the PR is ready.`,
+  plan: `- Explore the code and write an implementation plan for the ticket.
+- Then stop and wait for the user to approve the plan. Don't change code before they do.`,
+};
+
+export interface TicketPromptInput {
+  key: string;
+  url: string;
+  summary: string;
+  description: string;
+  cwd: string;
+  mode: TicketMode;
+}
+
+export function renderTicketPrompt(template: string, t: TicketPromptInput): string {
+  return template
+    .replaceAll("{{key}}", t.key)
+    .replaceAll("{{url}}", t.url)
+    .replaceAll("{{summary}}", t.summary)
+    .replaceAll("{{description}}", truncate(t.description.trim() || "(empty)", MAX_BODY * 2))
+    .replaceAll("{{cwd}}", t.cwd)
+    .replaceAll("{{modeInstructions}}", MODE_INSTRUCTIONS[t.mode]);
 }

@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import type { AgentKind, EventRow, Item, PrRow, PrStatus, SessionOptions, SessionRow } from "./types.ts";
+import type { AgentKind, EventRow, Item, PrRow, PrStatus, SessionOptions, SessionRow, TicketRow, TicketStatus } from "./types.ts";
 
 const MIGRATIONS: string[] = [
   `
@@ -58,6 +58,19 @@ const MIGRATIONS: string[] = [
   `,
   `
   ALTER TABLE prs ADD COLUMN title TEXT;
+  `,
+  `
+  CREATE TABLE tickets (
+    key TEXT PRIMARY KEY,
+    url TEXT NOT NULL,
+    summary TEXT,
+    session_id TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    picked_at INTEGER NOT NULL,
+    last_status TEXT NOT NULL,
+    last_reason TEXT,
+    dismissed INTEGER NOT NULL DEFAULT 0
+  );
   `,
 ];
 
@@ -249,7 +262,46 @@ export class Store {
   }
 
   private pruneSessions() {
-    this.db.exec("DELETE FROM sessions WHERE session_id NOT IN (SELECT session_id FROM prs)");
+    this.db.exec(
+      "DELETE FROM sessions WHERE session_id NOT IN (SELECT session_id FROM prs UNION SELECT session_id FROM tickets)",
+    );
+  }
+
+  // ---- Jira tickets ----
+
+  getTicket(key: string): TicketRow | null {
+    return this.db.query<TicketRow, { k: string }>("SELECT * FROM tickets WHERE key = $k").get({ k: key });
+  }
+
+  /** Records a picked-up ticket and creates the new session that will work it. */
+  insertTicket(t: { key: string; url: string; summary: string; sessionId: string; cwd: string; now: number; session: SessionOptions }) {
+    this.db.transaction(() => {
+      this.db
+        .query(
+          `INSERT INTO tickets (key, url, summary, session_id, cwd, picked_at, last_status)
+           VALUES ($k, $u, $s, $sid, $c, $t, 'queued')`,
+        )
+        .run({ k: t.key, u: t.url, s: t.summary, sid: t.sessionId, c: t.cwd, t: t.now });
+      this.ensureSession(t.sessionId, "claude", t.cwd, t.session);
+    })();
+  }
+
+  listTickets(opts: { includeDismissed?: boolean } = {}): TicketRow[] {
+    const where = opts.includeDismissed ? "" : "WHERE dismissed = 0";
+    return this.db.query<TicketRow, []>(`SELECT * FROM tickets ${where} ORDER BY picked_at`).all();
+  }
+
+  setTicketStatus(key: string, status: TicketStatus, reason: string | null) {
+    this.db.query("UPDATE tickets SET last_status = $st, last_reason = $r WHERE key = $k").run({ k: key, st: status, r: reason });
+  }
+
+  setTicketSummary(key: string, summary: string) {
+    this.db.query("UPDATE tickets SET summary = $s WHERE key = $k").run({ k: key, s: summary });
+  }
+
+  /** Hides a ticket from the dashboard. The row stays, so Sentinel still won't pick the ticket up again. */
+  dismissTicket(key: string): boolean {
+    return this.db.query("UPDATE tickets SET dismissed = 1 WHERE key = $k").run({ k: key }).changes > 0;
   }
 
   // ---- events ----

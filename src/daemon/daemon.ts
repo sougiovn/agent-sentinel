@@ -14,6 +14,8 @@ import { RexMux } from "../mux/rex.ts";
 import { Dispatcher } from "../spawn/dispatcher.ts";
 import type { RefreshResult, RpcMethod, RpcMethods, RpcRequest, RpcResponse, StatusInfo } from "./protocol.ts";
 import { Sentinel } from "./sentinel.ts";
+import { TicketWatcher } from "./tickets.ts";
+import { AcliJira, type JiraClient } from "../jira/acli.ts";
 
 const PROMPT_RETENTION_MS = 7 * 24 * 3600_000;
 
@@ -22,6 +24,7 @@ export const MANUAL_REFRESH_COOLDOWN_MS = 30_000;
 
 export interface DaemonOverrides {
   gh?: GhClient;
+  jira?: JiraClient;
   /** Runs git for locating local clones. */
   exec?: Exec;
   evaluator?: Evaluator;
@@ -36,6 +39,7 @@ export class Daemon {
   readonly store: Store;
   readonly sentinel: Sentinel;
   readonly dispatcher: Dispatcher;
+  readonly tickets: TicketWatcher;
   private readonly gh: GhClient;
   private readonly repos: RepoLocator;
   private config: Config;
@@ -43,6 +47,10 @@ export class Daemon {
   private server?: ReturnType<typeof Bun.serve>;
   private timer?: ReturnType<typeof setTimeout>;
   private nextPollAt: number | null = null;
+  private ticketTimer?: ReturnType<typeof setTimeout>;
+  private nextTicketPollAt: number | null = null;
+  private ticketPollInProgress = false;
+  private ticketError: string | null = null;
   private watcher?: { close(): void };
   private startedAt = Date.now();
   private muxCache = new Map<string, Multiplexer>();
@@ -94,6 +102,14 @@ export class Daemon {
       now,
       log,
     });
+    this.tickets = new TicketWatcher({
+      store: this.store,
+      jira: o.jira ?? new AcliJira(() => this.config.jira.command),
+      dispatcher: this.dispatcher,
+      config: () => this.config,
+      now,
+      log,
+    });
   }
 
   log(msg: string) {
@@ -122,10 +138,13 @@ export class Daemon {
       return { ok: false, error: r.error };
     }
     const intervalChanged = r.config.pollIntervalSec !== this.config.pollIntervalSec;
+    const jiraChanged =
+      r.config.jira.enabled !== this.config.jira.enabled || r.config.jira.pollIntervalSec !== this.config.jira.pollIntervalSec;
     this.config = r.config;
     this.configError = null;
     this.log("config reloaded");
     if (intervalChanged && this.timer) this.schedule(this.config.pollIntervalSec * 1000);
+    if (jiraChanged && this.server) this.scheduleTickets(this.config.jira.enabled ? 5000 : null);
     return { ok: true, error: null };
   }
 
@@ -135,6 +154,36 @@ export class Daemon {
     this.nextPollAt = this.stopping ? null : this.now() + delayMs;
     if (this.o.noTimer || this.stopping) return;
     this.timer = setTimeout(() => void this.runPoll(), delayMs);
+  }
+
+  /** Schedules the next Jira poll; null stops polling Jira. */
+  private scheduleTickets(delayMs: number | null) {
+    clearTimeout(this.ticketTimer);
+    this.ticketTimer = undefined;
+    this.nextTicketPollAt = this.stopping || delayMs === null ? null : this.now() + delayMs;
+    if (this.o.noTimer || this.stopping || delayMs === null) return;
+    this.ticketTimer = setTimeout(() => void this.runTicketPoll(), delayMs);
+  }
+
+  /** One Jira poll; the timer for the next one starts once it finishes. */
+  async runTicketPoll(): Promise<string[]> {
+    if (this.ticketPollInProgress || !this.config.jira.enabled) return [];
+    this.ticketPollInProgress = true;
+    clearTimeout(this.ticketTimer);
+    this.ticketTimer = undefined;
+    this.nextTicketPollAt = null;
+    try {
+      const r = await this.sentinel.exclusive(() => this.tickets.poll());
+      this.ticketError = null;
+      return r.found;
+    } catch (e) {
+      this.ticketError = (e as Error).message;
+      this.log(`Jira poll failed: ${this.ticketError}`);
+      return [];
+    } finally {
+      this.ticketPollInProgress = false;
+      this.scheduleTickets(this.config.jira.enabled ? this.config.jira.pollIntervalSec * 1000 : null);
+    }
   }
 
   /** One full polling pass; the timer for the next pass starts once it finishes. */
@@ -169,6 +218,7 @@ export class Daemon {
         accepted: false,
         error: "A poll is already in progress",
         checked: [],
+        tickets: [],
         nextPollAt: this.nextPollAt,
       };
     }
@@ -180,12 +230,14 @@ export class Daemon {
         error: `Manual refresh cooling down; try again in ${retryAfterSec}s`,
         retryAfterSec,
         checked: [],
+        tickets: [],
         nextPollAt: this.nextPollAt,
       };
     }
     this.lastManualRefreshAt = now;
     const checked = await this.runPoll();
-    return { accepted: true, checked, nextPollAt: this.nextPollAt };
+    const tickets = await this.runTicketPoll();
+    return { accepted: true, checked, tickets, nextPollAt: this.nextPollAt };
   }
 
   private prunePrompts() {
@@ -208,6 +260,14 @@ export class Daemon {
       nextPollAt: this.nextPollAt,
       prs: this.store.listPrs().length,
       configError: this.configError,
+      jira: {
+        enabled: this.config.jira.enabled,
+        label: this.config.jira.label,
+        pollIntervalSec: this.config.jira.pollIntervalSec,
+        nextPollAt: this.nextTicketPollAt,
+        tickets: this.store.listTickets().length,
+        error: this.ticketError,
+      },
     };
   }
 
@@ -242,6 +302,17 @@ export class Daemon {
         for (const id of ids) await this.sentinel.checkPr(id);
         await this.dispatcher.dispatchAll();
         return { checked: ids } as R;
+      }
+      case "tickets":
+        return this.store.listTickets().map((t) => ({ ...t, session: this.store.getSession(t.session_id) })) as R;
+      case "dismissTicket":
+        return { removed: this.store.dismissTicket((p as { key: string }).key.toUpperCase()) } as R;
+      case "pollTickets": {
+        if (!this.config.jira.enabled) throw new Error("Jira tickets are disabled (set jira.enabled in config.json)");
+        if (this.ticketPollInProgress) throw new Error("A Jira poll is already in progress");
+        await this.runTicketPoll();
+        if (this.ticketError) throw new Error(this.ticketError);
+        return { tickets: this.store.listTickets().map((t) => t.key) } as R;
       }
       case "refresh":
         return (await this.refresh()) as R;
@@ -317,6 +388,7 @@ export class Daemon {
       }
     });
     this.schedule(3000);
+    if (this.config.jira.enabled) this.scheduleTickets(5000);
     this.log(`daemon started (pid ${process.pid}, home ${this.paths.home})`);
   }
 
@@ -324,6 +396,7 @@ export class Daemon {
     if (this.stopping) return;
     this.stopping = true;
     clearTimeout(this.timer);
+    clearTimeout(this.ticketTimer);
     this.watcher?.close();
     this.server?.stop(true);
     try {

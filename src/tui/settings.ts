@@ -1,4 +1,4 @@
-import type { Config } from "../core/config.ts";
+import { TICKET_MODES, type Config } from "../core/config.ts";
 
 export type FieldKind = "enum" | "int" | "number" | "string" | "list" | "template";
 
@@ -7,6 +7,8 @@ export interface Field {
   label: string;
   kind: FieldKind;
   options?: string[];
+  /** A string field that may be cleared. */
+  allowEmpty?: boolean;
   get(c: Config): unknown;
   set(c: Config, v: unknown): void;
 }
@@ -51,6 +53,17 @@ export const FIELDS: Field[] = [
   bool("newWatch.startNow", "New watch: start session now", (c) => c.newWatch.startNow, (c, v) => (c.newWatch.startNow = v)),
   bool("newWatch.includeExisting", "New watch: act on existing", (c) => c.newWatch.includeExisting, (c, v) => (c.newWatch.includeExisting = v)),
   f("introPromptTemplate", "New session intro prompt", "template", (c) => c.introPromptTemplate, (c, v) => (c.introPromptTemplate = v)),
+  bool("jira.enabled", "Jira: pick up tickets", (c) => c.jira.enabled, (c, v) => (c.jira.enabled = v)),
+  f("jira.label", "Jira: required label", "string", (c) => c.jira.label, (c, v) => (c.jira.label = v)),
+  f("jira.statuses", "Jira: statuses picked up", "list", (c) => c.jira.statuses, (c, v) => (c.jira.statuses = v)),
+  f("jira.pollIntervalSec", "Jira: poll interval (s)", "int", (c) => c.jira.pollIntervalSec, (c, v) => (c.jira.pollIntervalSec = v)),
+  f("jira.mode", "Jira: agent mode", "enum", (c) => c.jira.mode, (c, v) => (c.jira.mode = v), [...TICKET_MODES]),
+  { ...f("jira.transitionTo", "Jira: move to status (blank = never)", "string", (c) => c.jira.transitionTo, (c, v) => (c.jira.transitionTo = v)), allowEmpty: true },
+  f("jira.cwd", "Jira: agent start directory", "string", (c) => c.jira.cwd, (c, v) => (c.jira.cwd = v)),
+  f("jira.model", "Jira: model", "string", (c) => c.jira.model, (c, v) => (c.jira.model = v)),
+  f("jira.effort", "Jira: effort", "string", (c) => c.jira.effort, (c, v) => (c.jira.effort = v)),
+  f("jira.command", "Jira: acli command", "string", (c) => c.jira.command, (c, v) => (c.jira.command = v)),
+  f("jira.promptTemplate", "Jira: ticket prompt", "template", (c) => c.jira.promptTemplate, (c, v) => (c.jira.promptTemplate = v)),
 ];
 
 export function displayValue(field: Field, c: Config): string {
@@ -60,7 +73,7 @@ export function displayValue(field: Field, c: Config): string {
     const first = String(v).split("\n")[0] ?? "";
     return `${first.slice(0, 40)}… (e: edit in $EDITOR)`;
   }
-  return String(v);
+  return field.allowEmpty && v === "" ? "(none)" : String(v);
 }
 
 export function editText(field: Field, c: Config): string {
@@ -88,6 +101,7 @@ export function parseValue(field: Field, text: string): unknown {
       if (!field.options?.includes(t)) throw new Error(`one of ${field.options?.join(", ")}`);
       return t;
     default:
+      if (!t && field.allowEmpty) return "";
       if (!t) throw new Error("must not be empty");
       return text;
   }

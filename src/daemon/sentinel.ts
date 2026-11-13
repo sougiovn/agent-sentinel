@@ -60,6 +60,11 @@ export class Sentinel {
 
   constructor(private d: SentinelDeps) {}
 
+  /** Runs other work (the Jira ticket poll) in the same queue, so it never overlaps PR polls. */
+  exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    return this.queue.run(fn);
+  }
+
   private async filterOptions(ref: PrRef): Promise<FilterOptions> {
     const cfg = this.d.config();
     const ignored = new Set<string>();
