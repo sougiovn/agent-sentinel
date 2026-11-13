@@ -50,6 +50,26 @@ export function scrubbedAgentEnv(env: Record<string, string | undefined> = proce
   return out;
 }
 
+interface EvaluatorResult {
+  type?: string;
+  is_error?: boolean;
+  subtype?: string;
+  result?: string;
+  structured_output?: Partial<Verdict>;
+  total_cost_usd?: number;
+}
+
+/**
+ * `claude -p --output-format json` can print every message as an array
+ * instead of only the result object (seen on 2.1.323); the verdict is in the
+ * last `type: "result"` entry.
+ */
+function resultMessage(parsed: unknown): EvaluatorResult {
+  if (!Array.isArray(parsed)) return parsed as EvaluatorResult;
+  const results = parsed.filter((m): m is EvaluatorResult => m?.type === "result");
+  return results.at(-1) ?? {};
+}
+
 export class ClaudeEvaluator implements Evaluator {
   constructor(
     private opts: () => ClaudeEvaluatorOptions,
@@ -65,15 +85,9 @@ export class ClaudeEvaluator implements Evaluator {
       timeoutMs: 180_000,
       env: scrubbedAgentEnv(),
     });
-    let out: {
-      is_error?: boolean;
-      subtype?: string;
-      result?: string;
-      structured_output?: Partial<Verdict>;
-      total_cost_usd?: number;
-    };
+    let out: EvaluatorResult;
     try {
-      out = JSON.parse(r.stdout);
+      out = resultMessage(JSON.parse(r.stdout));
     } catch {
       throw new Error(`Evaluator returned non-JSON (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
     }

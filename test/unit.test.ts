@@ -8,7 +8,7 @@ import { detectAgent, hookSessionId } from "../src/cli/detect.ts";
 import { prGroup, prLabel, prLine, sortByGroup } from "../src/cli/format.ts";
 import { DaemonUnavailableError, type Client } from "../src/cli/client.ts";
 import { stopDaemon } from "../src/cli/daemon-control.ts";
-import { evaluatorArgs, scrubbedAgentEnv } from "../src/evaluator/evaluator.ts";
+import { ClaudeEvaluator, evaluatorArgs, scrubbedAgentEnv } from "../src/evaluator/evaluator.ts";
 import { renderFixPrompt, rexNamingNote } from "../src/evaluator/prompt.ts";
 import { newItems, normalize } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq, writeClaudeHookSettings } from "../src/spawn/launcher.ts";
@@ -162,6 +162,29 @@ describe("evaluator args", () => {
     const a = evaluatorArgs({ model: "sonnet", maxBudgetUsd: 0.1, cwd: "/" });
     expect(a[a.indexOf("--max-budget-usd") + 1]).toBe("0.1");
     expect(a).toContain("--no-session-persistence");
+  });
+  test("reads the verdict from a plain result or a verbose message array", async () => {
+    const result = {
+      type: "result",
+      is_error: false,
+      subtype: "success",
+      structured_output: { shouldFix: true, reason: "fix it", items: ["issue:1"] },
+    };
+    const input = { prUrl: "https://x/1", title: "t", body: "", items: [] };
+    for (const stdout of [JSON.stringify(result), JSON.stringify([{ type: "system" }, { type: "assistant" }, result])]) {
+      const ev = new ClaudeEvaluator(
+        () => ({ model: "sonnet", maxBudgetUsd: 0, cwd: "/" }),
+        async () => ({ code: 0, stdout, stderr: "" }),
+      );
+      expect(await ev.evaluate(input)).toEqual({ shouldFix: true, reason: "fix it", items: ["issue:1"], costUsd: undefined });
+    }
+  });
+  test("verbose array with no result message is an evaluator failure", async () => {
+    const ev = new ClaudeEvaluator(
+      () => ({ model: "sonnet", maxBudgetUsd: 0, cwd: "/" }),
+      async () => ({ code: 0, stdout: JSON.stringify([{ type: "system" }]), stderr: "" }),
+    );
+    await expect(ev.evaluate({ prUrl: "https://x/1", title: "t", body: "", items: [] })).rejects.toThrow("Evaluator failed");
   });
   test("scrubs inherited agent env but keeps auth", () => {
     const out = scrubbedAgentEnv({ CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "x", CLAUDE_CODE_OAUTH_TOKEN: "t", PATH: "/bin" });
