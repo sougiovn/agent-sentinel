@@ -16,6 +16,8 @@ sentinel skill install   # teaches Claude Code / Codex how to hand off PRs
 
 Jira tickets also need the [Atlassian CLI](https://developer.atlassian.com/cloud/acli/) (`acli jira auth login`). Requires `gh` (authenticated), `claude`, and `rex` or `herdr` on `PATH`. `mise` installs `bun` and `gh`; install `claude`, `codex`, Rex and Herdr with their own installers. Herdr's server must already be running; Sentinel doesn't start it.
 
+If you run Claude Code with its sandbox on, add `~/.config/sentinel/sentinel.sock` to `sandbox.network.allowUnixSockets` in `~/.claude/settings.json`, or `sentinel watch` from your own sessions can't reach the daemon. Sessions Sentinel launches get this allowance automatically.
+
 ## Usage
 
 ```sh
@@ -31,7 +33,7 @@ Or press `n` in the dashboard to watch one of your open PRs without an agent ses
 ### Jira tickets
 
 Set `jira.enabled` (in `config.json` or the settings screen), then assign yourself a ticket in To Do or In Progress and add the label `sentinel` (`jira.label`). On the next Jira poll (every `jira.pollIntervalSec`, 600s by default) Sentinel starts a new Claude session in `~/work` with the ticket. The agent works out the repository from the ticket and asks you if it isn't sure. Sentinel then moves the ticket to In Progress. Each ticket gets one session, ever. `jira.mode` sets how far the agent goes:
-- `pr-watch` (default): implement, open a PR, and hand it to Sentinel with `sentinel watch`.
+- `pr-watch` (default): implement, open a PR, and hand it to Sentinel with `sentinel watch`. Sentinel then moves the ticket to In Review (`jira.reviewStatus`).
 - `pr`: implement and open a PR.
 - `plan`: write a plan and wait.
 
@@ -69,7 +71,7 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
 | `sentinel.db` | SQLite: `prs`, `seen_items`, `pending_items`, `sessions`, `events` (last 50 per PR), `tickets` |
 | `sentinel.sock`, `sentinel.pid`, `sentinel.log` | Daemon socket, pidfile and log |
 | `prompts/` | Fix prompts delivered to agents (pruned after 7 days) |
-| `hooks/claude-settings.json` | Hook settings passed to resumed Claude sessions |
+| `hooks/claude-settings.json` | Settings passed to Claude sessions Sentinel launches: state hooks, and the daemon socket in the sandbox allowlist |
 | `eval/` | Evaluator working directory |
 
 ## Config
@@ -100,7 +102,8 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
     "label": "sentinel", "statuses": ["To Do", "In Progress"],   // + assignee = currentUser()
     "cwd": "~/work", "model": "default", "effort": "default",
     "mode": "pr-watch",                  // "pr-watch" | "pr" | "plan"
-    "transitionTo": "In Progress",       // "" = never write to Jira
+    "transitionTo": "In Progress",       // when the agent starts; "" = don't
+    "reviewStatus": "In Review",         // when the ticket's session hands off its PR; "" = don't
     "promptTemplate": "… {{key}} … {{url}} … {{summary}} … {{description}} … {{cwd}} … {{modeInstructions}} …"
   }
 }

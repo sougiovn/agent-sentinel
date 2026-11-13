@@ -74,12 +74,12 @@ Sentinel can also start work for you. Write a Jira ticket, assign it to yourself
 - **One session per ticket:** a new ticket gets a row in `tickets` and a new Claude session that starts in `jira.cwd` (default `~/work`), with `jira.model` and `jira.effort`. That row means Sentinel never starts a second session for the ticket, even though an In Progress ticket still matches the query. Dismissing a ticket only hides it.
 - **The prompt:** `jira.promptTemplate`, with placeholders `{{key}}`, `{{url}}`, `{{summary}}`, `{{description}}`, `{{cwd}}` and `{{modeInstructions}}`. The default tells the agent to work out the repository from the ticket and to ask you if it isn't sure or the repository isn't available locally.
 - **Modes (`jira.mode`):** `{{modeInstructions}}` depends on the mode.
-  - `pr-watch` (default): implement, open a PR, then run `sentinel watch <pr>` from the same session. The PR is attached to the ticket's session, whose directory becomes the repository, so review feedback resumes it there.
+  - `pr-watch` (default): implement, open a PR, then run `sentinel watch <pr>` from the same session. The PR is attached to the ticket's session, whose directory becomes the repository, so review feedback resumes it there. Sentinel then moves the ticket to `jira.reviewStatus` (default `In Review`) and records the PR on the ticket's row. This happens once; a failure shows `transition_failed` and is retried the next time that session runs `sentinel watch`. The watch itself succeeds either way. Leave `jira.reviewStatus` empty to skip this transition.
   - `pr`: implement and open a PR, then stop.
   - `plan`: write a plan and wait for your approval.
-- **Writing to Jira:** once the agent has started, Sentinel moves the ticket to `jira.transitionTo` (default `In Progress`) with `acli jira workitem transition`. A ticket already in that status isn't moved. Leave the field empty to never write to Jira. Sentinel transitions only after the session starts, so a ticket whose launch failed stays where it was.
+- **Writing to Jira:** the only writes are status transitions. Once the agent has started, Sentinel moves the ticket to `jira.transitionTo` (default `In Progress`) with `acli jira workitem transition`. A ticket already in that status isn't moved. Leave the field empty to skip this transition. The second transition, to `jira.reviewStatus`, is described under `pr-watch` above. Sentinel transitions only after the session starts, so a ticket whose launch failed stays where it was.
 - **Limits and retries:** a ticket waits as `queued` while `spawn.maxConcurrent` agents are busy. A failed launch shows `spawn_failed` and is retried on the next poll. A failed transition shows `transition_failed`, and the agent keeps working. A failed search is shown in the dashboard and in `sentinel status`.
-- **Ticket statuses:** `queued`, `started`, `spawn_failed`, `transition_failed`.
+- **Ticket statuses:** `queued`, `started`, `in_review` (PR handed off and the ticket moved to review), `spawn_failed`, `transition_failed`.
 
 ## Polling
 
@@ -189,7 +189,7 @@ Resumed agents report their state back through `sentinel hook <signal>`. The hoo
 | `idle` | `Stop` | `Stop` | Session idle; queued items are delivered by typing the pointer line |
 | `exit` | `SessionEnd` | none | Agent gone; the next delivery types the full launch command |
 
-- Claude receives the hooks through `--settings ~/.config/sentinel/hooks/claude-settings.json`, which Sentinel writes before each launch.
+- Claude receives the hooks through `--settings ~/.config/sentinel/hooks/claude-settings.json`, which Sentinel writes before each launch. The same file adds the daemon socket to `sandbox.network.allowUnixSockets`, so a sandboxed agent can still run `sentinel watch` and the other CLI commands (for example a Jira ticket session handing off its PR). Without it the CLI can't reach the daemon, reports it as not running and tries to start another one. Sessions you start yourself need the socket in your own settings: add `~/.config/sentinel/sentinel.sock` to `sandbox.network.allowUnixSockets` in `~/.claude/settings.json`.
 - Codex receives them as `-c` overrides.
 - Because the `busy` hook fires whenever someone submits a prompt, a user typing to the agent in a Sentinel pane holds deliveries until the agent stops again.
 - **Busy timeout:** a session that stays busy longer than `spawn.busyTimeoutMin` minutes (default 60) is treated as idle. This covers agents whose hooks don't fire.
@@ -333,6 +333,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `jira.model` / `jira.effort` | `"default"` / `"default"` | `default` omits `--model` / `--effort` |
 | `jira.mode` | `"pr-watch"` | `pr-watch`, `pr` or `plan` |
 | `jira.transitionTo` | `"In Progress"` | Status to move a ticket to once its agent starts; `""` = never |
+| `jira.reviewStatus` | `"In Review"` | Status to move a ticket to once its session hands off a PR (`pr-watch`); `""` = never |
 | `jira.promptTemplate` | built-in | Placeholders `{{key}}`, `{{url}}`, `{{summary}}`, `{{description}}`, `{{cwd}}`, `{{modeInstructions}}` |
 
 **Reloading:**
@@ -352,7 +353,7 @@ Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
 | `sentinel.pid` | Daemon PID |
 | `sentinel.log` | Daemon log |
 | `prompts/` | Rendered fix prompts, kept 7 days |
-| `hooks/claude-settings.json` | Hook settings passed to resumed Claude sessions |
+| `hooks/claude-settings.json` | Settings passed to every Claude session Sentinel launches: the state hooks, and the daemon socket in the sandbox allowlist |
 | `eval/` | Working directory for evaluator calls |
 | `fixPromptTemplate.md`, `introPromptTemplate.md`, `jira.promptTemplate.md` | Scratch files used when editing a template from the TUI |
 
@@ -365,7 +366,7 @@ Database tables (`src/core/db.ts`, versioned migrations in `meta.schema_version`
 | `pending_items` | Flagged items waiting for delivery, with the evaluator's reason |
 | `sessions` | Per agent session: agent, directory, model and effort, whether Sentinel has launched it yet (`started`, 0 only for TUI-started sessions before their first launch), multiplexer, pane and tab IDs, busy or idle, paused, agent running, busy-since and last-signal timestamps |
 | `events` | Per-PR history, trimmed to the newest 50 |
-| `tickets` | One row per Jira ticket picked up: URL, summary, session, directory, pick-up time, status, reason, dismissed |
+| `tickets` | One row per Jira ticket picked up: URL, summary, session, directory, pick-up time, status, reason, dismissed, and the PR its session handed off |
 
 The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sentinel.db 'select id, last_status from prs'`. Write to it only while the daemon is stopped.
 
@@ -379,7 +380,7 @@ Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → e
 
 Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 
-Jira tickets are covered with a fake Jira client and a fake `acli`: JQL building and quoting, the `acli` arguments, parsing its JSON (Atlassian Document Format descriptions with links, cards, mentions and lists), ticket URLs on the logged-in site, each mode's prompt, model and effort reaching the launch, one session per ticket, transition after start (skipped when already there or when `transitionTo` is blank), retry after a failed launch, a failed transition, a failed search, `maxConcurrent`, a paused session, summary updates, dismissing, the ticket session surviving session pruning and taking over the PR it hands off, `r` polling Jira, the CLI table and status line, and the Jira settings. A TUI test drives the tickets list and dismissing.
+Jira tickets are covered with a fake Jira client and a fake `acli`: JQL building and quoting, the `acli` arguments, parsing its JSON (Atlassian Document Format descriptions with links, cards, mentions and lists), ticket URLs on the logged-in site, each mode's prompt, model and effort reaching the launch, one session per ticket, transition after start (skipped when already there or when `transitionTo` is blank), retry after a failed launch, a failed transition, a failed search, the move to review when the ticket's session hands off a PR (once, skipped for other sessions or a blank `reviewStatus`, retried after a failure), `maxConcurrent`, a paused session, summary updates, dismissing, the ticket session surviving session pruning and taking over the PR it hands off, `r` polling Jira, the CLI table and status line, and the Jira settings. A TUI test drives the tickets list and dismissing.
 
 Checked against the real tools: `acli jira workitem search --json` and `acli jira auth status` output, and a full Jira run through the daemon and Rex: a labelled ticket was picked up, its Claude session started in `~/work` with the ticket prompt, and the ticket moved to In Progress.
 
