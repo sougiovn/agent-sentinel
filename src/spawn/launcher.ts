@@ -15,10 +15,16 @@ export function hookCommand(self: string[], signal: HookSignal): string {
   return [...self.map(sq), "hook", signal].join(" ");
 }
 
-/** Claude settings JSON that reports agent state back to Sentinel. */
-export function claudeHookSettings(self: string[]) {
+/**
+ * Claude settings JSON that reports agent state back to Sentinel and lets the agent's sandboxed
+ * Bash commands reach the daemon socket, so the `sentinel` CLI works from inside the session.
+ */
+export function claudeHookSettings(self: string[], socket: string) {
   const hook = (s: HookSignal) => [{ hooks: [{ type: "command", command: hookCommand(self, s), timeout: 10 }] }];
-  return { hooks: { Stop: hook("idle"), UserPromptSubmit: hook("busy"), SessionEnd: hook("exit") } };
+  return {
+    hooks: { Stop: hook("idle"), UserPromptSubmit: hook("busy"), SessionEnd: hook("exit") },
+    sandbox: { network: { allowUnixSockets: [socket] } },
+  };
 }
 
 /** Codex `-c` overrides for the same hooks (TOML inline values). */
@@ -31,7 +37,7 @@ export function codexHookOverrides(self: string[]): string[] {
 export function writeClaudeHookSettings(paths: Paths, self: string[]): string {
   const file = join(paths.hooksDir, "claude-settings.json");
   mkdirSync(paths.hooksDir, { recursive: true });
-  writeFileSync(file, JSON.stringify(claudeHookSettings(self), null, 2));
+  writeFileSync(file, JSON.stringify(claudeHookSettings(self, paths.socket), null, 2));
   return file;
 }
 

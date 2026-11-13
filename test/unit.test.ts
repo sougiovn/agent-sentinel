@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, loadConfig, parseConfig, saveConfig } from "../src/core/config.ts";
@@ -11,7 +11,7 @@ import { stopDaemon } from "../src/cli/daemon-control.ts";
 import { evaluatorArgs, scrubbedAgentEnv } from "../src/evaluator/evaluator.ts";
 import { renderFixPrompt, rexNamingNote } from "../src/evaluator/prompt.ts";
 import { newItems, normalize } from "../src/github/snapshot.ts";
-import { claudeHookSettings, launchCommand, sq } from "../src/spawn/launcher.ts";
+import { claudeHookSettings, launchCommand, sq, writeClaudeHookSettings } from "../src/spawn/launcher.ts";
 import { getPaths } from "../src/core/paths.ts";
 import { cycleEnum, FIELDS, filterFields, parseValue } from "../src/tui/settings.ts";
 import { fakeGit } from "./fakes.ts";
@@ -140,10 +140,19 @@ describe("launcher", () => {
     expect(cmd).toContain(`'t-1' "$(cat '/p/f.md')"`);
   });
   test("claude hook settings", () => {
-    const s = claudeHookSettings(["/bin/sentinel"]);
+    const s = claudeHookSettings(["/bin/sentinel"], "/h/sentinel.sock");
     expect(s.hooks.Stop[0]!.hooks[0]!.command).toBe("'/bin/sentinel' hook idle");
     expect(s.hooks.UserPromptSubmit[0]!.hooks[0]!.command).toBe("'/bin/sentinel' hook busy");
     expect(s.hooks.SessionEnd[0]!.hooks[0]!.command).toBe("'/bin/sentinel' hook exit");
+    expect(s.sandbox.network.allowUnixSockets).toEqual(["/h/sentinel.sock"]);
+  });
+  test("the settings file passed to launched sessions lets their sandbox reach this daemon's socket", () => {
+    const home = getPaths(mkdtempSync(join(tmpdir(), "hooks-")));
+    const written = JSON.parse(readFileSync(writeClaudeHookSettings(home, ["/bin/sentinel"]), "utf8"));
+    expect(written.sandbox.network.allowUnixSockets).toEqual([home.socket]);
+    expect(launchCommand({ agent: "claude", sessionId: "s", cwd: "/w", promptFile: "/p.md" }, defaultConfig(), home, ["/bin/sentinel"])).toContain(
+      `--settings '${join(home.hooksDir, "claude-settings.json")}'`,
+    );
   });
 });
 
