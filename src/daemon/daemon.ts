@@ -12,10 +12,13 @@ import { HerdrMux } from "../mux/herdr.ts";
 import type { Multiplexer } from "../mux/mux.ts";
 import { RexMux } from "../mux/rex.ts";
 import { Dispatcher } from "../spawn/dispatcher.ts";
-import type { RpcMethod, RpcMethods, RpcRequest, RpcResponse, StatusInfo } from "./protocol.ts";
+import type { RefreshResult, RpcMethod, RpcMethods, RpcRequest, RpcResponse, StatusInfo } from "./protocol.ts";
 import { Sentinel } from "./sentinel.ts";
 
 const PROMPT_RETENTION_MS = 7 * 24 * 3600_000;
+
+/** Manual full polls are refused for this long after the previous accepted one. */
+export const MANUAL_REFRESH_COOLDOWN_MS = 30_000;
 
 export interface DaemonOverrides {
   gh?: GhClient;
@@ -44,6 +47,10 @@ export class Daemon {
   private startedAt = Date.now();
   private muxCache = new Map<string, Multiplexer>();
   private stopping = false;
+  private readonly now: () => number;
+  /** A full poll (scheduled or manual) is currently running. */
+  private pollInProgress = false;
+  private lastManualRefreshAt: number | null = null;
 
   constructor(
     readonly paths: Paths,
@@ -58,7 +65,7 @@ export class Daemon {
       this.log(`config error, using defaults: ${loaded.error}`);
     }
     this.store = new Store(paths.db);
-    const now = o.now ?? Date.now;
+    const now = (this.now = o.now ?? Date.now);
     const log = (m: string) => this.log(m);
     this.dispatcher = new Dispatcher({
       store: this.store,
@@ -123,19 +130,62 @@ export class Daemon {
   }
 
   private schedule(delayMs: number) {
-    if (this.o.noTimer || this.stopping) return;
     clearTimeout(this.timer);
-    this.nextPollAt = Date.now() + delayMs;
-    this.timer = setTimeout(async () => {
-      this.nextPollAt = null;
-      try {
-        await this.sentinel.tick();
-        this.prunePrompts();
-      } catch (e) {
-        this.log(`poll failed: ${(e as Error).message}`);
-      }
+    this.timer = undefined;
+    this.nextPollAt = this.stopping ? null : this.now() + delayMs;
+    if (this.o.noTimer || this.stopping) return;
+    this.timer = setTimeout(() => void this.runPoll(), delayMs);
+  }
+
+  /** One full polling pass; the timer for the next pass starts once it finishes. */
+  private async runPoll(): Promise<string[]> {
+    if (this.pollInProgress) return [];
+    this.pollInProgress = true;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.nextPollAt = null;
+    const ids = this.store.listPrs().map((pr) => pr.id);
+    try {
+      await this.sentinel.tick();
+      this.prunePrompts();
+    } catch (e) {
+      this.log(`poll failed: ${(e as Error).message}`);
+    } finally {
+      this.pollInProgress = false;
       this.schedule(this.config.pollIntervalSec * 1000);
-    }, delayMs);
+    }
+    return ids;
+  }
+
+  /**
+   * Polls all watched PRs now and restarts the countdown for the next poll.
+   * Refused while another poll is running, and for 30s after the previous
+   * accepted manual refresh, so repeated key presses can't cause a poll storm.
+   */
+  async refresh(): Promise<RefreshResult> {
+    const now = this.now();
+    if (this.pollInProgress) {
+      return {
+        accepted: false,
+        error: "A poll is already in progress",
+        checked: [],
+        nextPollAt: this.nextPollAt,
+      };
+    }
+    const elapsed = this.lastManualRefreshAt === null ? Infinity : now - this.lastManualRefreshAt;
+    if (elapsed < MANUAL_REFRESH_COOLDOWN_MS) {
+      const retryAfterSec = Math.ceil((MANUAL_REFRESH_COOLDOWN_MS - elapsed) / 1000);
+      return {
+        accepted: false,
+        error: `Manual refresh cooling down; try again in ${retryAfterSec}s`,
+        retryAfterSec,
+        checked: [],
+        nextPollAt: this.nextPollAt,
+      };
+    }
+    this.lastManualRefreshAt = now;
+    const checked = await this.runPoll();
+    return { accepted: true, checked, nextPollAt: this.nextPollAt };
   }
 
   private prunePrompts() {
@@ -193,6 +243,8 @@ export class Daemon {
         await this.dispatcher.dispatchAll();
         return { checked: ids } as R;
       }
+      case "refresh":
+        return (await this.refresh()) as R;
       case "history": {
         const id = this.sentinel.resolveId((p as { pr: string }).pr);
         if (!id) throw new Error(`Not watching ${(p as { pr: string }).pr}`);

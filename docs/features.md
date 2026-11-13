@@ -67,6 +67,7 @@ Press `n` in the dashboard to watch a PR that no agent session owns yet. Sentine
 ## Polling
 
 - One global interval, `pollIntervalSec` (default 300, minimum 30). The first poll runs about 3 seconds after the daemon starts; each later one is scheduled after the previous pass finishes.
+- **Manual refresh:** `r` in the dashboard runs a full pass over every watched PR immediately and restarts the countdown for the next scheduled poll. It is refused while a poll is already running and for 30 seconds after the previous accepted manual refresh, so repeated presses can't cause a poll storm. The TUI shows the remaining cooldown. The same behavior is available over the API as the `refresh` method.
 - PRs are checked one at a time. Polls, `sentinel check`, the TUI's check-now key and registrations all go through one serial queue, so they never overlap.
 - After every pass, Sentinel tries to deliver anything still queued (for example, sessions whose busy timeout has expired).
 - Per PR, Sentinel fetches (`src/github/gh.ts`):
@@ -201,7 +202,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - The daemon is independent of the dashboard: quitting the TUI leaves it running.
 - `sentinel daemon` runs it in the foreground and logs to stderr as well as `sentinel.log`. Startup failures are written to the log too.
 - **Single instance:** a second daemon refuses to start while one is answering on the socket. A leftover socket file from a crashed daemon is removed on start.
-- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `history`, `signal`, `pause`, `reload`, `stop`. The daemon is the only process that writes to SQLite.
+- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `reload`, `stop`. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
 - **Stopping:** `sentinel stop` asks the daemon to exit; if it doesn't answer, Sentinel sends `SIGTERM` to the PID in `sentinel.pid`. `SIGINT` and `SIGTERM` shut it down cleanly, removing the socket and pidfile. It waits up to 5 seconds for the daemon to stop answering.
 - **Restarting:** `sentinel restart` stops the daemon the same way, then starts a new one in the background (or just starts one if none was running). Use it after upgrading Sentinel, since a daemon started from the old build keeps running until it's stopped.
 - Prompt files older than 7 days are deleted after each poll.
@@ -244,10 +245,11 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `n` / `w` | Watch one of your PRs with a new Claude session (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)) |
 | `o` | Open the selected PR in the browser (`open`, or `xdg-open` on Linux) |
 | `c` | Check the selected PR now |
+| `r` | Refresh all watched PRs now and restart the poll countdown (single-flight, 30s cooldown) |
 | `d`, then `y` | Unwatch the selected PR |
 | `p` | Pause or resume deliveries to the PR's agent session |
 | `s` | Settings |
-| `r` | Reload config in the TUI and the daemon |
+| `R` | Reload config in the TUI and the daemon |
 | `S` | Retry starting the daemon (when it's offline) |
 | `q` / `Ctrl+C` | Quit |
 
@@ -264,7 +266,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `Esc` (while editing) | Cancel |
 | `/` | Filter settings by name: every word must appear in the label or config key. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `e` | Open the selected template (`fixPromptTemplate`, `introPromptTemplate`) in `$VISUAL` or `$EDITOR` (default `vi`) |
-| `r` | Reload config |
+| `r` | Reload config (inside settings; the main view uses `R` for this) |
 | `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
 - Lists (ignored authors, failing conclusions, agent args) are edited as comma-separated text.
@@ -301,7 +303,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `newWatch.includeExisting` | `true` | Form default for "Existing feedback" |
 
 **Reloading:**
-- The daemon watches the file and reloads about 200 ms after a change, whether the change came from the TUI or another editor. `sentinel reload` and the TUI's `r` reload on demand.
+- The daemon watches the file and reloads about 200 ms after a change, whether the change came from the TUI or another editor. `sentinel reload` and the TUI's `R` (or `r` inside settings) reload on demand.
 - An invalid file (bad JSON or a value that fails validation) is logged, reported in `status` and the TUI, and the daemon keeps running on the last good config.
 - A new poll interval takes effect immediately. Other settings apply from the next poll or delivery.
 
@@ -339,7 +341,7 @@ The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sen
 
 ## Verification status and known limits
 
-Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), config parsing and reload, database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, and starting the daemon.
+Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, and starting the daemon.
 
 Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 

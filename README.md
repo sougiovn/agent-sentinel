@@ -31,7 +31,7 @@ Or press `n` in the dashboard to watch one of your open PRs without an agent ses
 
 ### TUI keys
 
-`↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `c` check now · `d` unwatch · `p` pause/resume the session's deliveries · `s` settings · `r` reload config · `S` retry starting the daemon · `q` quit. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
+`↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `s` settings · `R` reload config · `S` retry starting the daemon · `q` quit. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
 In settings: `/` filters by name, `enter` edits a field or cycles an enum, and `e` opens a prompt template in `$EDITOR`.
 In the PR picker: type to filter by org, repo, `#number` or title, `↑/↓` to move, `enter` to pick. In the form: `←/→` or `space` changes a value, `e` types a custom model or path, and `enter` on `[ Watch ]` starts the watch.
 
