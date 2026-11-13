@@ -59,6 +59,7 @@ export const FIELDS: Field[] = [
   f("jira.pollIntervalSec", "Jira: poll interval (s)", "int", (c) => c.jira.pollIntervalSec, (c, v) => (c.jira.pollIntervalSec = v)),
   f("jira.mode", "Jira: agent mode", "enum", (c) => c.jira.mode, (c, v) => (c.jira.mode = v), [...TICKET_MODES]),
   { ...f("jira.transitionTo", "Jira: move to status (blank = never)", "string", (c) => c.jira.transitionTo, (c, v) => (c.jira.transitionTo = v)), allowEmpty: true },
+  { ...f("jira.reviewStatus", "Jira: status after PR handoff (blank = never)", "string", (c) => c.jira.reviewStatus, (c, v) => (c.jira.reviewStatus = v)), allowEmpty: true },
   f("jira.cwd", "Jira: agent start directory", "string", (c) => c.jira.cwd, (c, v) => (c.jira.cwd = v)),
   f("jira.model", "Jira: model", "string", (c) => c.jira.model, (c, v) => (c.jira.model = v)),
   f("jira.effort", "Jira: effort", "string", (c) => c.jira.effort, (c, v) => (c.jira.effort = v)),

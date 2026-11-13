@@ -72,6 +72,9 @@ const MIGRATIONS: string[] = [
     dismissed INTEGER NOT NULL DEFAULT 0
   );
   `,
+  `
+  ALTER TABLE tickets ADD COLUMN pr_id TEXT;
+  `,
 ];
 
 export const EVENTS_PER_PR = 50;
@@ -293,6 +296,14 @@ export class Store {
 
   setTicketStatus(key: string, status: TicketStatus, reason: string | null) {
     this.db.query("UPDATE tickets SET last_status = $st, last_reason = $r WHERE key = $k").run({ k: key, st: status, r: reason });
+  }
+
+  ticketForSession(sessionId: string): TicketRow | null {
+    return this.db.query<TicketRow, { s: string }>("SELECT * FROM tickets WHERE session_id = $s").get({ s: sessionId });
+  }
+
+  setTicketPr(key: string, prId: string) {
+    this.db.query("UPDATE tickets SET pr_id = $p WHERE key = $k").run({ k: key, p: prId });
   }
 
   setTicketSummary(key: string, summary: string) {

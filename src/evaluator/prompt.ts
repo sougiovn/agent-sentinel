@@ -98,7 +98,7 @@ export function rexNamingNote(layout: Layout): string {
 /** What the agent does with a ticket, per `jira.mode`. Fills `{{modeInstructions}}` in the ticket template. */
 export const MODE_INSTRUCTIONS: Record<TicketMode, string> = {
   "pr-watch": `- Implement the ticket on a new branch, commit, push, and open a pull request that links the ticket.
-- Then hand the PR to Sentinel from this session: \`sentinel watch <pr-url>\`. Sentinel will resume this session with review comments and failing checks.`,
+- Then hand the PR to Sentinel from this session: \`sentinel watch <pr-url>\`. Sentinel moves the ticket to review and will resume this session with review comments and failing checks. Don't change the ticket's status yourself.`,
   pr: `- Implement the ticket on a new branch, commit, push, and open a pull request that links the ticket.
 - Then stop and tell the user the PR is ready.`,
   plan: `- Explore the code and write an implementation plan for the ticket.

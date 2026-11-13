@@ -34,6 +34,7 @@ const STATUS_COLOR: Record<string, string> = {
   error: "#e74c3c",
   queued: "#3498db",
   started: "#f1c40f",
+  in_review: "#2ecc71",
   transition_failed: "#e67e22",
 };
 

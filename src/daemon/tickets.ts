@@ -39,6 +39,34 @@ export class TicketWatcher {
     return { found: tickets.map((t) => t.key), started };
   }
 
+  /**
+   * A ticket's session handed off a PR (`sentinel watch` in pr-watch mode): remember the PR and move the
+   * ticket to `jira.reviewStatus`, once. Sessions that don't belong to a ticket are ignored.
+   */
+  async prHandedOff(sessionId: string, prIds: string[]): Promise<void> {
+    const { store, log } = this.d;
+    const cfg = this.d.config().jira;
+    const ticket = store.ticketForSession(sessionId);
+    const prId = prIds[0];
+    if (!cfg.enabled || !ticket || !prId) return;
+    const url = store.getPr(prId)?.url ?? prId;
+    if (ticket.pr_id !== prId) store.setTicketPr(ticket.key, prId);
+    if (ticket.last_status === "in_review") return;
+    if (!cfg.reviewStatus) {
+      store.setTicketStatus(ticket.key, "started", `PR handed off: ${url}`);
+      return;
+    }
+    try {
+      await this.d.jira.transition(ticket.key, cfg.reviewStatus);
+      store.setTicketStatus(ticket.key, "in_review", `PR ${url} handed off; moved to ${cfg.reviewStatus}`);
+      log(`${ticket.key}: PR ${prId} handed off, moved to ${cfg.reviewStatus}`);
+    } catch (e) {
+      const msg = `PR ${url} handed off, but moving the ticket to ${cfg.reviewStatus} failed: ${(e as Error).message}`;
+      store.setTicketStatus(ticket.key, "transition_failed", msg);
+      log(`${ticket.key}: ${msg}`);
+    }
+  }
+
   /** Records a new ticket and starts its session; retries tickets whose session never started. */
   private async pickUp(t: Ticket): Promise<boolean> {
     const { store, dispatcher, log } = this.d;

@@ -360,3 +360,61 @@ describe("ticket formatting and settings", () => {
     expect([cycleEnum(mode, cfg), (mode.set(cfg, "plan"), cycleEnum(mode, cfg))]).toEqual(["pr", "pr-watch"]);
   });
 });
+
+describe("PR handoff moves the ticket to review", () => {
+  async function startedTicket(patch: (c: Config) => void = () => {}) {
+    const t = withJira(patch);
+    t.jira.add("CP-1");
+    await t.daemon.runTicketPoll();
+    const { parsePrRef } = await import("../src/core/pr-ref.ts");
+    t.gh.add(parsePrRef("acme/web#1"));
+    return { ...t, sid: t.store.getTicket("CP-1")!.session_id };
+  }
+  const watchFrom = (t: Awaited<ReturnType<typeof startedTicket>>, sessionId = t.sid) =>
+    t.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId, cwd: "/repo" });
+
+  test("sentinel watch from the ticket session moves it to In Review, once", async () => {
+    const t = await startedTicket();
+    await watchFrom(t);
+    const row = t.store.getTicket("CP-1")!;
+    expect(row.last_status).toBe("in_review");
+    expect(row.pr_id).toBe("github.com/acme/web#1");
+    expect(row.last_reason).toContain("moved to In Review");
+    expect(t.jira.transitions).toEqual([
+      { key: "CP-1", status: "In Progress" },
+      { key: "CP-1", status: "In Review" },
+    ]);
+    await watchFrom(t);
+    expect(t.jira.transitions).toHaveLength(2);
+  });
+
+  test("a watch from a session that isn't a ticket's leaves Jira alone", async () => {
+    const t = await startedTicket();
+    await watchFrom(t, "someone-else");
+    expect(t.jira.transitions).toHaveLength(1);
+    expect(t.store.getTicket("CP-1")!.last_status).toBe("started");
+  });
+
+  test("blank reviewStatus records the PR without writing to Jira", async () => {
+    const t = await startedTicket((c) => (c.jira.reviewStatus = ""));
+    await watchFrom(t);
+    expect(t.jira.transitions).toHaveLength(1);
+    expect(t.store.getTicket("CP-1")!.last_reason).toContain("PR handed off");
+  });
+
+  test("a failed review transition is reported, the watch still succeeds, and the next handoff retries", async () => {
+    const t = await startedTicket();
+    t.jira.failTransition = new Error("no transition");
+    const res = await watchFrom(t);
+    expect(res[0]!.error).toBeUndefined();
+    expect(t.store.getTicket("CP-1")!.last_status).toBe("transition_failed");
+    t.jira.failTransition = null;
+    await watchFrom(t);
+    expect(t.store.getTicket("CP-1")!.last_status).toBe("in_review");
+  });
+
+  test("the pr-watch prompt tells the agent Sentinel owns the status", () => {
+    const p = renderTicketPrompt(defaultConfig().jira.promptTemplate, { key: "K", url: "u", summary: "s", description: "", cwd: "/w", mode: "pr-watch" });
+    expect(p).toContain("Don't change the ticket's status yourself");
+  });
+});

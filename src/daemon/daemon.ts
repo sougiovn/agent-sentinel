@@ -279,8 +279,18 @@ export class Daemon {
         return this.status() as R;
       case "list":
         return this.store.listPrs().map((pr) => ({ ...pr, session: this.store.getSession(pr.session_id) })) as R;
-      case "watch":
-        return (await this.sentinel.watch(p)) as R;
+      case "watch": {
+        const req = p as RpcMethods["watch"][0];
+        const results = await this.sentinel.watch(req);
+        const sessionId = results.find((r) => !r.error)?.sessionId;
+        if (sessionId) {
+          const ids = results.filter((r) => !r.error).map((r) => r.id);
+          await this.sentinel
+            .exclusive(() => this.tickets.prHandedOff(sessionId, ids))
+            .catch((e: Error) => this.log(`ticket update after watch failed: ${e.message}`));
+        }
+        return results as R;
+      }
       case "myPrs":
         return (await this.myPrs()) as R;
       case "newWatchDefaults": {

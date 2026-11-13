@@ -113,6 +113,8 @@ export const ConfigSchema = z.object({
       mode: z.enum(TICKET_MODES).default("pr-watch"),
       /** Status to move a ticket to once its agent has started. "" = don't transition. */
       transitionTo: z.string().default("In Progress"),
+      /** Status to move a ticket to once its session hands off a PR (pr-watch mode). "" = don't transition. */
+      reviewStatus: z.string().default("In Review"),
       promptTemplate: z.string().min(1).default(DEFAULT_TICKET_TEMPLATE),
     })
     .prefault({}),
