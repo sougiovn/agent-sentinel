@@ -191,6 +191,36 @@ test("TUI filters watched PRs by repo or title with /", async () => {
   t.renderer.destroy();
 });
 
+test("TUI refreshes all PRs with r, backs off, and reloads config with R", async () => {
+  const d = makeDaemon();
+  d.gh.add(parsePrRef("acme/web#1"), { title: "Fix login redirect" });
+  await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+  d.gh.comment(parsePrRef("acme/web#1"), { id: 101 });
+  const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={d.paths} autoStart={false} client={client} />, { width: 140, height: 24 });
+  const frame = async () => {
+    await Bun.sleep(150);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+
+  t.mockInput.pressKey("r");
+  let f = await frame();
+  expect(f).toContain("Refreshed 1 PR");
+  expect(d.evaluator.calls).toHaveLength(1);
+
+  t.mockInput.pressKey("r");
+  f = await frame();
+  expect(f).toContain("cooling down");
+  expect(d.evaluator.calls).toHaveLength(1);
+
+  t.mockInput.pressKey("r", { shift: true });
+  f = await frame();
+  expect(f).toContain("Config reloaded (TUI + daemon)");
+  t.renderer.destroy();
+});
+
 test("TUI opens the selected PR in the browser with o", async () => {
   const d = makeDaemon();
   for (const r of ["acme/web#1", "acme/web#2"]) {

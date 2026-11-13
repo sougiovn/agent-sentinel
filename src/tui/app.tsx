@@ -73,6 +73,7 @@ export function App(props: AppProps) {
   const shownPrs = () => filterWatched(prs(), listQuery());
   const [history, setHistory] = createSignal<EventRow[]>([]);
   const [flash, setFlash] = createSignal<{ text: string; error: boolean } | null>(null);
+  const [refreshing, setRefreshing] = createSignal(false);
   const [confirmDelete, setConfirmDelete] = createSignal(false);
   const [config, setConfig] = createSignal<Config | null>(null);
   const [configError, setConfigError] = createSignal<string | null>(null);
@@ -140,6 +141,30 @@ export function App(props: AppProps) {
       else notify(`Config invalid, daemon kept last good config: ${r.error}`, true);
     } else notify(configError() ? `Config invalid: ${configError()}` : "Config reloaded (daemon offline)", !!configError());
     await refresh();
+  };
+
+  /** Forces a full poll; the daemon enforces single-flight and the 30s cooldown. */
+  const refreshAll = async () => {
+    if (!online()) {
+      notify("Start the daemon first (S)", true);
+      return;
+    }
+    if (refreshing()) {
+      notify("A refresh is already in progress", true);
+      return;
+    }
+    setRefreshing(true);
+    notify("Refreshing all PRs…");
+    try {
+      const r = await client.call("refresh", {}, 600_000);
+      if (!r.accepted) notify(r.error ?? "Refresh refused", true);
+      else notify(r.checked.length ? `Refreshed ${r.checked.length} PR${r.checked.length === 1 ? "" : "s"}` : "Refreshed (no PRs watched)");
+    } catch (e) {
+      notify((e as Error).message, true);
+    } finally {
+      setRefreshing(false);
+      await refresh();
+    }
   };
 
   const persist = async (mutate: (c: Config) => void) => {
@@ -423,7 +448,8 @@ export function App(props: AppProps) {
           setView("settings");
           return;
         case "r":
-          await reloadAll();
+          if (key.shift) await reloadAll();
+          else await refreshAll();
           return;
         case "n":
         case "w":
@@ -596,10 +622,11 @@ export function App(props: AppProps) {
         return "↑↓ move · ←→/space change · e type a model or path · enter on [ Watch ] to start · esc back";
       default:
         if (listFiltering()) return "type to filter by repo or title · ↑↓ move · enter done · esc clear";
-        if (listQuery()) return "↑↓ move · enter history · o open · / change filter · esc clear filter · c check · d unwatch · p pause";
+        if (listQuery())
+          return "↑↓ move · enter history · o open · / change filter · esc clear filter · c check · r refresh · d unwatch · p pause";
         return online()
-          ? "↑↓ move · / filter · enter history · o open · n watch a PR · c check now · d unwatch · p pause/resume · s settings · r reload · q quit"
-          : "S start daemon · r reload config · q quit";
+          ? "↑↓ move · / filter · enter history · o open · n watch a PR · c check now · r refresh all · d unwatch · p pause/resume · s settings · R reload · q quit"
+          : "S start daemon · R reload config · q quit";
     }
   };
 

@@ -50,6 +50,20 @@ export interface CwdCheck {
   warning?: string;
 }
 
+/** Result of a manual, full poll triggered from the TUI. */
+export interface RefreshResult {
+  /** False when a poll was already running or the manual-refresh cooldown is active. */
+  accepted: boolean;
+  /** Human-readable reason when the request was refused. */
+  error?: string;
+  /** Whole seconds until another manual refresh is allowed (cooldown refusals only). */
+  retryAfterSec?: number;
+  /** PRs included in the pass; empty when refused. */
+  checked: string[];
+  /** When the next scheduled poll is due, once the pass has finished. */
+  nextPollAt: number | null;
+}
+
 /** method name → [params, result] */
 export interface RpcMethods {
   status: [Record<string, never>, StatusInfo];
@@ -61,6 +75,7 @@ export interface RpcMethods {
   validateCwd: [{ pr: string; path: string }, CwdCheck];
   unwatch: [{ pr: string }, { removed: boolean }];
   check: [{ pr?: string }, { checked: string[] }];
+  refresh: [Record<string, never>, RefreshResult];
   history: [{ pr: string }, EventRow[]];
   signal: [{ sessionId: string; signal: HookSignal }, { known: boolean }];
   pause: [{ sessionId: string; paused: boolean }, { ok: true }];

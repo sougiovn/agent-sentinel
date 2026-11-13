@@ -304,6 +304,78 @@ describe("rpc", () => {
   });
 });
 
+describe("manual refresh", () => {
+  test("polls every watched PR and restarts the countdown for the next poll", async () => {
+    let clock = 1_000_000;
+    const t = makeDaemon({ now: () => clock });
+    const api = parsePrRef("acme/api#2");
+    t.gh.add(ref);
+    t.gh.add(api);
+    await t.daemon.handle("watch", { prs: [PR, "acme/api#2"], agent: "claude", sessionId: "s", cwd: "/r" });
+    t.gh.comment(ref, { id: 101 });
+    t.gh.comment(api, { id: 201 });
+
+    const r = await t.daemon.handle("refresh", {});
+    expect(r.accepted).toBe(true);
+    expect([...r.checked].sort()).toEqual(["github.com/acme/api#2", ID]);
+    expect(t.evaluator.calls.map((c) => c.items[0]!.id).sort()).toEqual(["issue:101", "issue:201"]);
+    // The next scheduled poll is a full interval away, measured from the finished pass.
+    expect(r.nextPollAt).toBe(clock + 300_000);
+    expect(t.daemon.status().nextPollAt).toBe(r.nextPollAt);
+  });
+
+  test("refuses refreshes during the 30s cooldown after an accepted one", async () => {
+    let clock = 1_000_000;
+    const t = makeDaemon({ now: () => clock });
+    t.gh.add(ref);
+    await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: "/r" });
+    expect((await t.daemon.handle("refresh", {})).accepted).toBe(true);
+
+    t.gh.comment(ref, { id: 101 });
+    clock += 29_000;
+    const refused = await t.daemon.handle("refresh", {});
+    expect(refused.accepted).toBe(false);
+    expect(refused.retryAfterSec).toBe(1);
+    expect(refused.checked).toEqual([]);
+    expect(t.evaluator.calls).toHaveLength(0);
+
+    clock += 1_000;
+    const accepted = await t.daemon.handle("refresh", {});
+    expect(accepted.accepted).toBe(true);
+    expect(t.evaluator.calls).toHaveLength(1);
+  });
+
+  test("refuses a refresh while a full poll is already running", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref);
+    await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: "/r" });
+
+    const fetchActivity = t.gh.fetchActivity.bind(t.gh);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let gated = false;
+    t.gh.fetchActivity = async (r) => {
+      if (!gated) {
+        gated = true;
+        await gate;
+      }
+      return fetchActivity(r);
+    };
+
+    const first = t.daemon.handle("refresh", {});
+    await Bun.sleep(0);
+    const second = await t.daemon.handle("refresh", {});
+    expect(second.accepted).toBe(false);
+    expect(second.error).toContain("in progress");
+    expect(second.checked).toEqual([]);
+
+    release();
+    const done = await first;
+    expect(done.accepted).toBe(true);
+    expect(done.checked).toEqual([ID]);
+  });
+});
+
 describe("new-session watches (TUI)", () => {
   const fresh = (startNow: boolean, includeExisting = false, extra: { model?: string; effort?: string } = {}) => ({
     prs: [PR],
