@@ -39,6 +39,8 @@ If the daemon isn't running, `sentinel watch` starts it.
 | `sentinel` | Interactive dashboard (for the user; don't run it from an agent) |
 | `sentinel start` | Start the daemon in the background |
 
+If Sentinel started you for a Jira ticket and the prompt says to hand off your PR, run `sentinel watch <pr-url>` from this same session once the PR is open.
+
 ## When Sentinel resumes you
 
 You'll receive a prompt (or a one-line pointer to a prompt file under `~/.config/sentinel/prompts/`) listing the PR items that need work: comment author (`user.login`, `user.type`), body, file/line, or failing check with a log tail. Follow its instructions: fix, commit, push. Only reply to bot comments; never reply to or resolve human comments — tell the user what you changed and suggest a reply instead.

@@ -4,6 +4,7 @@ This page describes what Sentinel does today and how each part behaves. The [REA
 
 - [The flow end to end](#the-flow-end-to-end)
 - [Handing off PRs](#handing-off-prs)
+- [Jira tickets](#jira-tickets)
 - [Polling](#polling)
 - [Detecting new activity](#detecting-new-activity)
 - [Evaluation](#evaluation)
@@ -63,6 +64,22 @@ Press `n` in the dashboard to watch a PR that no agent session owns yet. Sentine
    - With **Existing feedback** on, existing items are evaluated right away, and if any need work they become the first prompt.
    - With **Start session: now** and nothing to fix, Sentinel launches the session with `introPromptTemplate`, which tells the agent to check out the PR branch, read the change and wait. The PR's history records `session_started`.
    - With **on first feedback**, nothing launches until a later poll finds something to fix.
+
+## Jira tickets
+
+Sentinel can also start work for you. Write a Jira ticket, assign it to yourself, add the configured label (`jira.label`, default `sentinel`), and on the next Jira poll Sentinel starts a new Claude session for it. This is off until you set `jira.enabled` (`src/daemon/tickets.ts`, `src/jira/acli.ts`).
+
+- **Reading Jira:** through the Atlassian CLI, which must be logged in (`acli jira auth login`). Each poll runs `acli jira workitem search --json` with `assignee = currentUser() AND labels = "<label>" AND status IN (<jira.statuses>)`, by default `"To Do", "In Progress"`.
+- **Own interval:** `jira.pollIntervalSec` (default 600s, minimum 60), separate from the PR poll. The first Jira poll runs about 5 seconds after the daemon starts. `r` in the dashboard and `sentinel tickets check` poll Jira now too. Jira polls share the PR poll's queue, so they never run at the same time.
+- **One session per ticket:** a new ticket gets a row in `tickets` and a new Claude session that starts in `jira.cwd` (default `~/work`), with `jira.model` and `jira.effort`. That row means Sentinel never starts a second session for the ticket, even though an In Progress ticket still matches the query. Dismissing a ticket only hides it.
+- **The prompt:** `jira.promptTemplate`, with placeholders `{{key}}`, `{{url}}`, `{{summary}}`, `{{description}}`, `{{cwd}}` and `{{modeInstructions}}`. The default tells the agent to work out the repository from the ticket and to ask you if it isn't sure or the repository isn't available locally.
+- **Modes (`jira.mode`):** `{{modeInstructions}}` depends on the mode.
+  - `pr-watch` (default): implement, open a PR, then run `sentinel watch <pr>` from the same session. The PR is attached to the ticket's session, whose directory becomes the repository, so review feedback resumes it there.
+  - `pr`: implement and open a PR, then stop.
+  - `plan`: write a plan and wait for your approval.
+- **Writing to Jira:** once the agent has started, Sentinel moves the ticket to `jira.transitionTo` (default `In Progress`) with `acli jira workitem transition`. A ticket already in that status isn't moved. Leave the field empty to never write to Jira. Sentinel transitions only after the session starts, so a ticket whose launch failed stays where it was.
+- **Limits and retries:** a ticket waits as `queued` while `spawn.maxConcurrent` agents are busy. A failed launch shows `spawn_failed` and is retried on the next poll. A failed transition shows `transition_failed`, and the agent keeps working. A failed search is shown in the dashboard and in `sentinel status`.
+- **Ticket statuses:** `queued`, `started`, `spawn_failed`, `transition_failed`.
 
 ## Polling
 
@@ -141,10 +158,12 @@ Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) th
 
   ```sh
   cd '<cwd>' && 'claude' --resume '<session>' --settings '<hooks file>' \
-    --add-dir '~/.config/sentinel/prompts' <claude args> "$(cat '<prompt file>')"
+    --add-dir '~/.config/sentinel/prompts' <claude args> -- "$(cat '<prompt file>')"
   ```
 
-  A session created from the TUI uses `--session-id '<session>'` on its first launch. Its model and effort are added as `--model`/`--effort` (Codex: `-m`, `-c model_reasoning_effort=…`).
+  The `--` matters: `--add-dir` takes any number of directories, so without it Claude would read the prompt as another directory and start with no prompt.
+
+  A session created from the TUI or for a Jira ticket uses `--session-id '<session>'` on its first launch. Its model and effort are added as `--model`/`--effort` (Codex: `-m`, `-c model_reasoning_effort=…`).
 
   For Codex: `cd '<cwd>' && 'codex' resume -c hooks.Stop=… -c hooks.UserPromptSubmit=… <codex args> '<session>' "$(cat '<prompt file>')"`.
 - **Agent still running and idle:** one line, `Sentinel has new PR feedback for you. Read the file <prompt file> and follow its instructions.`, followed by Enter. Typing a pointer instead of the whole prompt avoids pasting multi-line text into the agent's input.
@@ -202,7 +221,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - The daemon is independent of the dashboard: quitting the TUI leaves it running.
 - `sentinel daemon` runs it in the foreground and logs to stderr as well as `sentinel.log`. Startup failures are written to the log too.
 - **Single instance:** a second daemon refuses to start while one is answering on the socket. A leftover socket file from a crashed daemon is removed on start.
-- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `reload`, `stop`. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
+- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
 - **Stopping:** `sentinel stop` asks the daemon to exit; if it doesn't answer, Sentinel sends `SIGTERM` to the PID in `sentinel.pid`. `SIGINT` and `SIGTERM` shut it down cleanly, removing the socket and pidfile. It waits up to 5 seconds for the daemon to stop answering.
 - **Restarting:** `sentinel restart` stops the daemon the same way, then starts a new one in the background (or just starts one if none was running). Use it after upgrading Sentinel, since a daemon started from the old build keeps running until it's stopped.
 - Prompt files older than 7 days are deleted after each poll.
@@ -217,6 +236,9 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel unwatch <pr>` | Stop watching a PR and delete its data |
 | `sentinel list [--json]` | Table of watched PRs: ID, agent, session, last check, status, reason |
 | `sentinel check [<pr>]` | Poll one PR, or all of them, now, then try to deliver queued fixes |
+| `sentinel tickets [--json]` | Table of Jira tickets Sentinel picked up: key, summary, session, pick-up time, status, reason |
+| `sentinel tickets check` | Poll Jira now |
+| `sentinel tickets dismiss <key>` | Hide a ticket from the list; it still won't be picked up again |
 | `sentinel status [--json]` | PID, home directory, multiplexer, interval, time until next poll, number of PRs, config error |
 | `sentinel reload` | Re-read `config.json` |
 | `sentinel stop` | Stop the daemon |
@@ -248,6 +270,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `r` | Refresh all watched PRs now and restart the poll countdown (single-flight, 30s cooldown) |
 | `d`, then `y` | Unwatch the selected PR |
 | `p` | Pause or resume deliveries to the PR's agent session |
+| `t` | Move the selection between the PR list and the Jira tickets list. With a ticket selected: `↑/↓` move, `o` opens it in the browser, `d` dismisses it (asks first), `p` pauses or resumes its session, `t`/`Esc` go back to PRs |
 | `s` | Settings |
 | `R` | Reload config in the TUI and the daemon |
 | `S` | Retry starting the daemon (when it's offline) |
@@ -301,6 +324,16 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `newWatch.effort` / `.efforts` | `"default"` / `default, low, medium, high, xhigh, max` | Default and choices for the form; `default` omits `--effort` |
 | `newWatch.startNow` | `true` | Form default for "Start session" |
 | `newWatch.includeExisting` | `true` | Form default for "Existing feedback" |
+| `jira.enabled` | `false` | Pick up Jira tickets (see [Jira tickets](#jira-tickets)) |
+| `jira.command` | `"acli"` | Atlassian CLI binary |
+| `jira.pollIntervalSec` | `600` | Minimum 60 |
+| `jira.label` | `"sentinel"` | Label a ticket needs to be picked up |
+| `jira.statuses` | `["To Do", "In Progress"]` | Ticket statuses picked up |
+| `jira.cwd` | `"~/work"` | Directory the ticket agent starts in |
+| `jira.model` / `jira.effort` | `"default"` / `"default"` | `default` omits `--model` / `--effort` |
+| `jira.mode` | `"pr-watch"` | `pr-watch`, `pr` or `plan` |
+| `jira.transitionTo` | `"In Progress"` | Status to move a ticket to once its agent starts; `""` = never |
+| `jira.promptTemplate` | built-in | Placeholders `{{key}}`, `{{url}}`, `{{summary}}`, `{{description}}`, `{{cwd}}`, `{{modeInstructions}}` |
 
 **Reloading:**
 - The daemon watches the file and reloads about 200 ms after a change, whether the change came from the TUI or another editor. `sentinel reload` and the TUI's `R` (or `r` inside settings) reload on demand.
@@ -321,7 +354,7 @@ Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
 | `prompts/` | Rendered fix prompts, kept 7 days |
 | `hooks/claude-settings.json` | Hook settings passed to resumed Claude sessions |
 | `eval/` | Working directory for evaluator calls |
-| `fixPromptTemplate.md`, `introPromptTemplate.md` | Scratch files used when editing a template from the TUI |
+| `fixPromptTemplate.md`, `introPromptTemplate.md`, `jira.promptTemplate.md` | Scratch files used when editing a template from the TUI |
 
 Database tables (`src/core/db.ts`, versioned migrations in `meta.schema_version`):
 
@@ -332,6 +365,7 @@ Database tables (`src/core/db.ts`, versioned migrations in `meta.schema_version`
 | `pending_items` | Flagged items waiting for delivery, with the evaluator's reason |
 | `sessions` | Per agent session: agent, directory, model and effort, whether Sentinel has launched it yet (`started`, 0 only for TUI-started sessions before their first launch), multiplexer, pane and tab IDs, busy or idle, paused, agent running, busy-since and last-signal timestamps |
 | `events` | Per-PR history, trimmed to the newest 50 |
+| `tickets` | One row per Jira ticket picked up: URL, summary, session, directory, pick-up time, status, reason, dismissed |
 
 The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sentinel.db 'select id, last_status from prs'`. Write to it only while the daemon is stopped.
 
@@ -345,8 +379,11 @@ Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → e
 
 Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 
+Jira tickets are covered with a fake Jira client and a fake `acli`: JQL building and quoting, the `acli` arguments, parsing its JSON (Atlassian Document Format descriptions with links, cards, mentions and lists), ticket URLs on the logged-in site, each mode's prompt, model and effort reaching the launch, one session per ticket, transition after start (skipped when already there or when `transitionTo` is blank), retry after a failed launch, a failed transition, a failed search, `maxConcurrent`, a paused session, summary updates, dismissing, the ticket session surviving session pruning and taking over the PR it hands off, `r` polling Jira, the CLI table and status line, and the Jira settings. A TUI test drives the tickets list and dismissing.
+
+Checked against the real tools: `acli jira workitem search --json` and `acli jira auth status` output, and a full Jira run through the daemon and Rex: a labelled ticket was picked up, its Claude session started in `~/work` with the ticket prompt, and the ticket moved to In Progress.
+
 Not verified yet:
-- **Daemon:** it has not been run end to end, because the development sandbox blocks its socket.
 - **Herdr:** the adapter is written from Herdr's help text; real JSON output hasn't been checked.
 - **Codex hooks:** whether `-c hooks.*` overrides fire is unconfirmed. If they don't, Codex sessions rely on the busy timeout.
 - **Resuming a real agent session from a PR comment** has not been done end to end.
@@ -354,6 +391,7 @@ Not verified yet:
 - **`sentinel restart` and the TUI's `o`** are covered by unit tests only; restarting a real daemon and opening a real browser haven't been tried.
 
 Known limits:
+- **Jira:** the Jira timer only runs in a started daemon, so its scheduling (first poll after 5s, rescheduling when `jira.enabled` or the interval changes) isn't covered by tests. Tickets have no event history (`enter` does nothing on a ticket); look at `sentinel.log`. A ticket that leaves the query while it is still `queued` isn't started until it matches again. Deleting a ticket's row (with the daemon stopped) is the only way to have Sentinel pick it up a second time.
 - The watched-PR table doesn't scroll; with more PRs than fit, the bottom ones are hidden (use `/` to filter).
 - If a session's busy timeout expires after its agent exited without an `exit` signal (always the case for Codex, which has no `exit` hook), the pointer line is typed into a bare shell instead of the agent.
 - Agent args that contain commas can't be edited in the TUI; edit `config.json` instead.
