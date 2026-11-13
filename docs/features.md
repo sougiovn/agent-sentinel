@@ -151,6 +151,7 @@ Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) th
 - Panes start as an interactive shell in the agent's directory, and Sentinel types commands into them. New panes and tabs don't take focus.
 - If the stored pane no longer exists (closed by the user, or the Sentinel session was killed), Sentinel creates a new one, and recreates the session or workspace if needed.
 - Changing `multiplexer` makes the next delivery open a new pane in the new multiplexer.
+- **herdr-core (`hc`)** has no sessions, tabs or splits. Each agent session gets its own terminal, started detached from any parent terminal, in the agent's directory, with the labels `sentinel=<spawn.sessionName>` and `pane=<agent>:<id>`. `spawn.layout` and `spawn.maxPanesPerTab` don't apply. List them with `hc ls --label sentinel=sentinel`. A terminal that has finished counts as gone, so the next delivery opens a new one.
 
 ### What gets typed
 
@@ -172,12 +173,12 @@ After a successful delivery, the session is marked busy and its PRs' status beco
 
 ### When delivery fails
 
-If the multiplexer can't be reached (Rex down, Herdr server not running) or a pane command fails:
+If the multiplexer can't be reached (Rex down, Herdr server or herdr-core core not running) or a pane command fails:
 
 - each affected PR's status becomes `spawn_failed` with the error;
 - the queued items are dropped and un-marked as seen.
 
-The next poll then sees them as new again and evaluates them together with anything newer, so nothing is lost and the agent gets one combined prompt. Sentinel never starts the Herdr server itself.
+The next poll then sees them as new again and evaluates them together with anything newer, so nothing is lost and the agent gets one combined prompt. Sentinel never starts the Herdr server or the herdr-core core itself.
 
 ## Agent state hooks
 
@@ -302,7 +303,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `multiplexer` | `"rex"` | `"rex"` or `"herdr"` |
+| `multiplexer` | `"rex"` | `"rex"`, `"herdr"` or `"hc"` (herdr-core) |
 | `pollIntervalSec` | `300` | Minimum 30 |
 | `evaluator.model` | `"sonnet"` | Any `claude --model` value |
 | `evaluator.maxBudgetUsd` | `0` | 0 = no cap |
@@ -315,7 +316,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `spawn.maxPanesPerTab` | `4` | |
 | `spawn.maxConcurrent` | `0` | 0 = unlimited |
 | `spawn.busyTimeoutMin` | `60` | |
-| `spawn.sessionName` | `"sentinel"` | Name of Sentinel's Rex session or Herdr workspace |
+| `spawn.sessionName` | `"sentinel"` | Name of Sentinel's Rex session or Herdr workspace; with `hc`, the value of the `sentinel` label |
 | `fixPromptTemplate` | built-in | Placeholders `{{prUrl}}`, `{{reason}}`, `{{items}}` |
 | `introPromptTemplate` | built-in | First prompt for a TUI-started session with nothing to fix. Placeholders `{{prUrl}}`, `{{title}}`, `{{repo}}`, `{{number}}`, `{{cwd}}` |
 | `newWatch.onlyMine` | `true` | PR picker lists only PRs you authored; `false` = any open PR involving you |
@@ -378,7 +379,7 @@ The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sen
 
 Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, and starting the daemon.
 
-Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
+Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), the herdr-core adapter against `hc` 0.1.20 (terminal creation, labels, working directory, typing a quoted line, detecting a finished terminal), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 
 Jira tickets are covered with a fake Jira client and a fake `acli`: JQL building and quoting, the `acli` arguments, parsing its JSON (Atlassian Document Format descriptions with links, cards, mentions and lists), ticket URLs on the logged-in site, each mode's prompt, model and effort reaching the launch, one session per ticket, transition after start (skipped when already there or when `transitionTo` is blank), retry after a failed launch, a failed transition, a failed search, the move to review when the ticket's session hands off a PR (once, skipped for other sessions or a blank `reviewStatus`, retried after a failure), `maxConcurrent`, a paused session, summary updates, dismissing, the ticket session surviving session pruning and taking over the PR it hands off, `r` polling Jira, the CLI table and status line, and the Jira settings. A TUI test drives the tickets list and dismissing.
 
