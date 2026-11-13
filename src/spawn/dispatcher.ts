@@ -19,6 +19,11 @@ export interface DispatcherDeps {
 
 export type DispatchResult = "delivered" | "queued" | "paused" | "empty" | "failed";
 
+export interface DeliverHooks {
+  onDelivered: (paneId: string, promptFile: string, now: number) => void;
+  onFailed: (msg: string, now: number) => void;
+}
+
 /**
  * Delivers queued fix items to agent sessions, one fix at a time per session.
  * Busy/idle state comes from agent hooks (`sentinel hook ...`), with a timeout fallback.
@@ -67,7 +72,7 @@ export class Dispatcher {
     if (session.paused) return "paused";
     if (this.isBusy(sessionId)) return "queued";
     const cfg = config();
-    if (cfg.spawn.maxConcurrent > 0 && this.busyCount() >= cfg.spawn.maxConcurrent) return "queued";
+    if (this.atCapacity()) return "queued";
 
     const groups = new Map<string, FixGroup>();
     for (const p of pending) {
@@ -108,33 +113,60 @@ export class Dispatcher {
    * Launches a session Sentinel created itself with an intro prompt, so the agent is ready before any feedback.
    * Does nothing if the session has already been launched.
    */
-  async kickoff(sessionId: string, pr: { id: string; url: string; title: string }): Promise<DispatchResult> {
-    if (this.inFlight.has(sessionId)) return "queued";
-    this.inFlight.add(sessionId);
-    try {
-      const { store } = this.d;
-      const session = store.getSession(sessionId);
-      if (!session) return "empty";
-      if (session.started) return "empty";
-      if (session.paused) return "paused";
-      const ref = fromPrId(pr.id);
-      const text = this.d
-        .config()
-        .introPromptTemplate.replaceAll("{{prUrl}}", pr.url)
-        .replaceAll("{{title}}", pr.title)
-        .replaceAll("{{cwd}}", session.cwd)
-        .replaceAll("{{repo}}", `${ref.owner}/${ref.repo}`)
-        .replaceAll("{{number}}", String(ref.number));
-      return await this.deliver(session, text, {
+  kickoff(sessionId: string, pr: { id: string; url: string; title: string }): Promise<DispatchResult> {
+    const { store } = this.d;
+    const ref = fromPrId(pr.id);
+    return this.startSession(
+      sessionId,
+      (session) =>
+        this.d
+          .config()
+          .introPromptTemplate.replaceAll("{{prUrl}}", pr.url)
+          .replaceAll("{{title}}", pr.title)
+          .replaceAll("{{cwd}}", session.cwd)
+          .replaceAll("{{repo}}", `${ref.owner}/${ref.repo}`)
+          .replaceAll("{{number}}", String(ref.number)),
+      {
         onDelivered: (paneId, promptFile, now) => {
           store.setPrStatus(pr.id, "fix_running", "Session started");
           store.addEvent(pr.id, "session_started", { pane: paneId, promptFile }, now);
-          this.d.log(`session ${sessionId}: started in pane ${paneId}`);
         },
         onFailed: (msg, now) => {
           store.setPrStatus(pr.id, "spawn_failed", msg);
           store.addEvent(pr.id, "spawn_failed", { error: msg }, now);
         },
+      },
+    );
+  }
+
+  /** True when `spawn.maxConcurrent` agents are already busy. */
+  atCapacity(): boolean {
+    const max = this.d.config().spawn.maxConcurrent;
+    return max > 0 && this.busyCount() >= max;
+  }
+
+  /**
+   * Launches a session Sentinel created itself with its first prompt.
+   * Does nothing if the session has already been launched.
+   */
+  async startSession(
+    sessionId: string,
+    text: (session: SessionRow) => string,
+    hooks: DeliverHooks,
+  ): Promise<DispatchResult> {
+    if (this.inFlight.has(sessionId)) return "queued";
+    this.inFlight.add(sessionId);
+    try {
+      const session = this.d.store.getSession(sessionId);
+      if (!session) return "empty";
+      if (session.started) return "empty";
+      if (session.paused) return "paused";
+      return await this.deliver(session, text(session), {
+        onDelivered: (paneId, promptFile, now) => {
+          hooks.onDelivered(paneId, promptFile, now);
+          this.d.log(`session ${sessionId}: started in pane ${paneId}`);
+        },
+        onFailed: hooks.onFailed,
       });
     } finally {
       this.inFlight.delete(sessionId);
@@ -145,10 +177,7 @@ export class Dispatcher {
   private async deliver(
     session: SessionRow,
     text: string,
-    hooks: {
-      onDelivered: (paneId: string, promptFile: string, now: number) => void;
-      onFailed: (msg: string, now: number) => void;
-    },
+    hooks: DeliverHooks,
   ): Promise<DispatchResult> {
     const { store } = this.d;
     const sessionId = session.session_id;
