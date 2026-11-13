@@ -1,5 +1,5 @@
 import { exec as defaultExec, execOk, type Exec } from "../core/exec.ts";
-import { findKey, MuxUnavailableError, parseJson, type CreatePaneOptions, type Multiplexer, type PaneRef } from "./mux.ts";
+import { findKey, MuxUnavailableError, parseJson, tabName, type CreatePaneOptions, type Multiplexer, type PaneRef } from "./mux.ts";
 
 interface RexBlock {
   block_id: string;
@@ -59,7 +59,7 @@ export class RexMux implements Multiplexer {
     const sessionId = await this.findSession(opts.homeId, opts.homeName);
     if (!sessionId) {
       const out = parseJson(
-        await this.rex(["new", opts.homeName, "--window", `${opts.homeName}-1`, "-c", opts.cwd, "--json"]),
+        await this.rex(["new", opts.homeName, "--window", tabName(opts, 0), "-c", opts.cwd, "--json"]),
         "rex new",
       );
       const paneId = findKey(out, "block_id") ?? (out as { initial_windows?: { block_ids?: string[] }[] }).initial_windows?.[0]?.block_ids?.[0];
@@ -111,7 +111,7 @@ export class RexMux implements Multiplexer {
         "new",
         "-s",
         sessionId,
-        `${opts.homeName}-${byWindow.size + 1}`,
+        tabName(opts, byWindow.size),
         "-c",
         opts.cwd,
         "--focus=false",

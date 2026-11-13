@@ -133,6 +133,7 @@ describe("ticket polling", () => {
     expect(prompt).toContain("Never rename the Rex session");
     expect(t.jira.transitions).toEqual([{ key: "CP-1", status: "In Progress" }]);
     expect(t.store.getSession(row.session_id)!.state).toBe("busy");
+    expect([...t.mux.panes.values()][0]!.opts.label).toBe("CP-1");
 
     // Still matches the query (now In Progress), but never gets a second session.
     await t.daemon.runTicketPoll();

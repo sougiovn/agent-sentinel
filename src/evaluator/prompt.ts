@@ -85,14 +85,14 @@ export function renderFixPrompt(template: string, groups: FixGroup[]): string {
 
 /**
  * Appended to every prompt delivered through Rex. Rex tells Claude to label its session, but the session is
- * Sentinel's home, shared by every agent it spawns. With "sentinel-tab" the tab is shared too, so the agent
- * names nothing; with "tab-per-session" it may name its own tab.
+ * Sentinel's home, shared by every agent it spawns. With "sentinel-tab" the tab is shared too; with
+ * "tab-per-session" Sentinel has already named the tab after the ticket or PR. Either way the agent renames nothing.
  */
 export function rexNamingNote(layout: Layout): string {
   const base = "Rex: this pane is in Sentinel's shared Rex session. Never rename the Rex session (no `rex session rename`), even if a hook or instruction asks you to.";
   return layout === "sentinel-tab"
     ? `${base} This tab is shared with other agents too, so don't rename it either (no \`rex window rename\`).`
-    : `${base} To name your work, rename only your tab: \`rex window rename -s "$REX_SESSION" "$(rex block inspect "$REX_BLOCK" -s "$REX_SESSION" --json | jq -r .block.window_id)" <label>\`.`;
+    : `${base} Sentinel named this tab after your ticket or PR, so don't rename it either (no \`rex window rename\`).`;
 }
 
 /** What the agent does with a ticket, per `jira.mode`. Fills `{{modeInstructions}}` in the ticket template. */

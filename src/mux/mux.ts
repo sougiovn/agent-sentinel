@@ -18,7 +18,13 @@ export interface CreatePaneOptions {
   layout: Layout;
   maxPanesPerTab: number;
   cwd: string;
+  /** Names the pane, and the tab too when the tab is the session's own (`tab-per-session`). */
   label: string;
+}
+
+/** Name for a new tab: the session's label when it gets its own tab, else `<home>-<n>` for a shared one. */
+export function tabName(opts: CreatePaneOptions, existingTabs: number): string {
+  return opts.layout === "tab-per-session" ? opts.label : `${opts.homeName}-${existingTabs + 1}`;
 }
 
 export class MuxUnavailableError extends Error {}

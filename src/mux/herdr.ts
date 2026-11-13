@@ -1,5 +1,5 @@
 import { exec as defaultExec, execOk, type Exec } from "../core/exec.ts";
-import { findKey, MuxUnavailableError, parseJson, type CreatePaneOptions, type Multiplexer, type PaneRef } from "./mux.ts";
+import { findKey, MuxUnavailableError, parseJson, tabName, type CreatePaneOptions, type Multiplexer, type PaneRef } from "./mux.ts";
 
 interface HerdrPane {
   pane_id: string;
@@ -45,7 +45,9 @@ export class HerdrMux implements Multiplexer {
       const out = await this.herdr(["workspace", "create", "--cwd", opts.cwd, "--label", opts.homeName, "--no-focus"]);
       const homeId = findKey(out, "workspace_id");
       if (!homeId) throw new Error("herdr workspace create did not return a workspace id");
-      return this.refFrom(out, opts.label, homeId);
+      const ref = await this.refFrom(out, opts.label, homeId);
+      await this.run(["herdr", "tab", "rename", ref.tabId, tabName(opts, 0)]);
+      return ref;
     }
 
     const panes = list<HerdrPane>(await this.herdr(["pane", "list", "--workspace", ws.workspace_id]), "panes");
@@ -84,7 +86,7 @@ export class HerdrMux implements Multiplexer {
       "--cwd",
       opts.cwd,
       "--label",
-      opts.label,
+      tabName(opts, byTab.size),
       "--no-focus",
     ]);
     return this.refFrom(out, opts.label, ws.workspace_id);

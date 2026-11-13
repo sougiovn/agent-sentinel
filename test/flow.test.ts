@@ -217,6 +217,7 @@ describe("per-session queue", () => {
     const [pane] = [...t.mux.panes.values()];
     expect(pane!.lines[0]).toContain("--resume");
     expect(pane!.opts.homeId).toBe("session:home"); // reuses the stored home session, not its (renameable) label
+    expect(pane!.opts.label).toBe("web#1"); // named after the PR it fixes
   });
 
   test("paused session holds fixes until resumed", async () => {

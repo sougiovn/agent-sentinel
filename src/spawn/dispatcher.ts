@@ -173,6 +173,17 @@ export class Dispatcher {
     }
   }
 
+  /** Names a session's pane (and tab) after its Jira ticket or PRs, e.g. `CP-7713` or `repo#42`. */
+  private paneLabel(session: SessionRow): string {
+    const ticket = this.d.store.ticketForSession(session.session_id);
+    if (ticket) return ticket.key;
+    const prs = this.d.store.prsForSession(session.session_id).map((pr) => {
+      const ref = fromPrId(pr.id);
+      return `${ref.repo}#${ref.number}`;
+    });
+    return prs.length ? prs.join(",") : `${session.agent}:${session.session_id.slice(0, 8)}`;
+  }
+
   /** Types the prompt into the session's pane, creating the pane and launching the agent as needed. */
   private async deliver(
     session: SessionRow,
@@ -215,7 +226,7 @@ export class Dispatcher {
           layout: cfg.spawn.layout,
           maxPanesPerTab: cfg.spawn.maxPanesPerTab,
           cwd: session.cwd,
-          label: `${session.agent}:${sessionId.slice(0, 8)}`,
+          label: this.paneLabel(session),
         });
         paneId = ref.paneId;
         store.setMeta(homeKey, ref.homeId);

@@ -142,12 +142,12 @@ Queued items wait in SQLite (`pending_items`) until their session can take them 
 
 ### Panes
 
-Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). Each agent session gets one pane, labelled `<agent>:<first 8 chars of session ID>`, and the pane's ID is stored so it can be reused.
+Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). Each agent session gets one pane, named after the work it handles: the Jira ticket key (`CP-7713`), or the repo and number of each PR it watches (`web#42`, comma-separated if there are several). A session with neither falls back to `<agent>:<first 8 chars of session ID>`. The pane's ID is stored so it can be reused, and the name is set once, when the pane is created.
 
 - `spawn.layout: "sentinel-tab"` (default): new panes go into an existing Sentinel tab that has fewer than `spawn.maxPanesPerTab` panes (default 4), alternating right and below splits. When every tab is full, Sentinel opens a new one.
-- `spawn.layout: "tab-per-session"`: every new pane gets its own tab.
+- `spawn.layout: "tab-per-session"`: every new pane gets its own tab, named like the pane. Shared tabs (`sentinel-tab`) keep numbered names: `sentinel-1`, `sentinel-2`, and so on.
 - Sentinel remembers its home session/workspace by id, so it keeps finding it after an agent inside renames it (Rex prompts Claude to label its session). It falls back to `spawn.sessionName` only when that id is gone.
-- With Rex, every prompt Sentinel delivers ends with a note telling the agent not to rename the shared Rex session. With `sentinel-tab` it mustn't rename its tab either, since other agents share it; with `tab-per-session` it may rename only its own tab (`rex window rename`).
+- With Rex, every prompt Sentinel delivers ends with a note telling the agent not to rename the shared Rex session. It mustn't rename its tab either: with `sentinel-tab` other agents share it, and with `tab-per-session` Sentinel has already named it after the ticket or PR.
 - Panes start as an interactive shell in the agent's directory, and Sentinel types commands into them. New panes and tabs don't take focus.
 - If the stored pane no longer exists (closed by the user, or the Sentinel session was killed), Sentinel creates a new one, and recreates the session or workspace if needed.
 - Changing `multiplexer` makes the next delivery open a new pane in the new multiplexer.

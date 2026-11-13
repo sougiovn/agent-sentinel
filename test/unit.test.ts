@@ -512,6 +512,22 @@ describe("rex mux", () => {
     expect(second.tabId).toBe(first.tabId);
   });
 
+  test("tab-per-session names each tab after its pane label; shared tabs stay numbered", async () => {
+    const rex = fakeRex();
+    const mux = new RexMux(rex.exec);
+    const first = await mux.createPane(opts({ layout: "tab-per-session", label: "CP-1" }));
+    await mux.createPane(opts({ layout: "tab-per-session", label: "repo#42", homeId: first.homeId }));
+    const windowNames = rex.calls.flatMap((c) =>
+      c[1] === "new" ? [c[c.indexOf("--window") + 1]] : c[1] === "window" && c[2] === "new" ? [c[5]] : [],
+    );
+    expect(windowNames).toEqual(["CP-1", "repo#42"]);
+
+    const shared = fakeRex();
+    await new RexMux(shared.exec).createPane(opts({ label: "CP-1" }));
+    expect(shared.calls.find((c) => c[1] === "new")).toContain("sentinel-1");
+    expect(shared.calls).toContainEqual(["rex", "block", "rename", "block:3", "CP-1"]);
+  });
+
   test("falls back to the label when the stored session is gone", async () => {
     const rex = fakeRex();
     const mux = new RexMux(rex.exec);
@@ -523,9 +539,9 @@ describe("rex mux", () => {
 });
 
 describe("rex naming note", () => {
-  test("sentinel-tab forbids renaming the tab; tab-per-session allows it", () => {
-    expect(rexNamingNote("sentinel-tab")).toContain("don't rename it either");
-    expect(rexNamingNote("sentinel-tab")).not.toContain("rename only your tab");
-    expect(rexNamingNote("tab-per-session")).toContain("rename only your tab");
+  test("neither layout lets the agent rename its tab", () => {
+    expect(rexNamingNote("sentinel-tab")).toContain("shared with other agents");
+    expect(rexNamingNote("tab-per-session")).toContain("named this tab after your ticket or PR");
+    for (const l of ["sentinel-tab", "tab-per-session"] as const) expect(rexNamingNote(l)).toContain("no `rex window rename`");
   });
 });
