@@ -79,6 +79,9 @@ export function launchCommand(spec: LaunchSpec, config: Config, paths: Paths, se
       sq(paths.promptsDir),
       ...modelArgs(spec).map(sq),
       ...a.args.map(sq),
+      // `--add-dir` (and possibly user args) take a variable number of values; without `--` the prompt
+      // would be read as one more of them and Claude would start with no prompt.
+      "--",
       prompt,
     ].join(" ");
   }

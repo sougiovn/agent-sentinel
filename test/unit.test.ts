@@ -130,6 +130,10 @@ describe("launcher", () => {
     expect(cmd).toContain(`'--permission-mode' 'acceptEdits'`);
     expect(cmd).toEndWith(`"$(cat '/p/f.md')"`);
   });
+  test("claude prompt is never swallowed by the variadic --add-dir", () => {
+    const cmd = launchCommand({ agent: "claude", sessionId: "s-1", cwd: "/w", promptFile: "/p/f.md", newSession: true }, defaultConfig(), paths, ["/bin/sentinel"]);
+    expect(cmd).toMatch(/--add-dir '[^']+' -- "\$\(cat '\/p\/f\.md'\)"$/);
+  });
   test("codex launch command", () => {
     const cmd = launchCommand({ agent: "codex", sessionId: "t-1", cwd: "/w", promptFile: "/p/f.md" }, defaultConfig(), paths, ["/bin/sentinel"]);
     expect(cmd).toStartWith(`cd '/w' && 'codex' resume '-c' `);
