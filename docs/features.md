@@ -272,7 +272,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `p` | Pause or resume deliveries to the PR's agent session |
 | `t` | Move the selection between the PR list and the Jira tickets list. With a ticket selected: `↑/↓` move, `o` opens it in the browser, `d` dismisses it (asks first), `p` pauses or resumes its session, `t`/`Esc` go back to PRs |
 | `s` | Settings |
-| `R` | Reload config in the TUI and the daemon |
+| `R` | Reload config and theme in the TUI and the daemon |
 | `S` | Retry starting the daemon (when it's offline) |
 | `q` / `Ctrl+C` | Quit |
 
@@ -289,7 +289,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `Esc` (while editing) | Cancel |
 | `/` | Filter settings by name: every word must appear in the label or config key. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `e` | Open the selected template (`fixPromptTemplate`, `introPromptTemplate`) in `$VISUAL` or `$EDITOR` (default `vi`) |
-| `r` | Reload config (inside settings; the main view uses `R` for this) |
+| `r` | Reload config and theme (inside settings; the main view uses `R` for this) |
 | `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
 - Lists (ignored authors, failing conclusions, agent args) are edited as comma-separated text.
@@ -341,6 +341,32 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - An invalid file (bad JSON or a value that fails validation) is logged, reported in `status` and the TUI, and the daemon keeps running on the last good config.
 - A new poll interval takes effect immediately. Other settings apply from the next poll or delivery.
 
+### Theme
+
+The dashboard's colours live in a separate `~/.config/sentinel/theme.json` (`src/tui/theme.ts`), created with the defaults when the dashboard first runs. It holds colours only. Every key is optional, so a partial file is valid; missing keys keep their defaults, and `statuses` is merged with the default status colours.
+
+| Key | Default | Used for |
+| --- | --- | --- |
+| `text` | `#ecf0f1` | Default text and statuses with no colour |
+| `textSecondary` | `#bdc3c7` | PR titles, reasons and event details |
+| `textMuted` | `#7f8c8d` | Hints, field labels, table headers and the footer |
+| `accent` | `#2ecc71` | Title, focused borders and other highlights |
+| `info` | `#3498db` | Repo group headings, timestamps and `watched` markers |
+| `success` | `#2ecc71` | Success messages |
+| `warning` | `#e67e22` | Warnings, like the daemon being offline |
+| `error` | `#e74c3c` | Errors and invalid config |
+| `pending` | `#f1c40f` | Work-in-progress messages |
+| `selectionBackground` | `#2c3e50` | Background of the selected row |
+| `modalBackground` | `#1e272e` | Background of the floating dialogs |
+| `statuses.<status>` | see below | Colour of that status in the PR and ticket lists |
+
+Statuses default to `no_changes` `#7f8c8d`, `no_action` `#95a5a6`, `pending` `#7f8c8d`, `fix_spawned` `#3498db`, `fix_running` `#f1c40f`, `spawn_failed` `#e74c3c`, `error` `#e74c3c`, `queued` `#3498db`, `started` `#f1c40f`, `in_review` `#2ecc71` and `transition_failed` `#e67e22`. An unknown status uses `text`.
+
+- Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `transparent`.
+- The TUI watches the file and applies a change about 200 ms after it is saved. `R` (or `r` inside settings) reloads it on demand.
+- Invalid JSON or a colour that fails validation shows a banner and keeps the last good theme. Unknown keys are rejected, so typos don't pass silently.
+- Deleting the file resets the running TUI to the defaults; it is created again with the defaults on the next launch.
+
 ## Data on disk
 
 Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
@@ -348,6 +374,7 @@ Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
 | Path | Contents |
 | --- | --- |
 | `config.json` | Settings |
+| `theme.json` | Dashboard colours (created with the defaults when the dashboard first runs) |
 | `sentinel.db` | SQLite database (WAL mode) |
 | `sentinel.sock` | Daemon socket |
 | `sentinel.pid` | Daemon PID |
@@ -376,7 +403,7 @@ The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sen
 
 ## Verification status and known limits
 
-Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, and starting the daemon.
+Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, theme parsing (defaults, partial files, status merge, invalid colours and unknown keys), database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, a custom theme and its live reload (including an invalid edit keeping the last good theme), and starting the daemon.
 
 Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 
