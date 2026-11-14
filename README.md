@@ -41,6 +41,19 @@ Set `jira.enabled` (in `config.json` or the settings screen), then assign yourse
 
 `watch` detects the agent from `$CLAUDE_CODE_SESSION_ID` or `$CODEX_THREAD_ID`, and uses the current directory as the place to resume in. Override with `--agent`, `--session` and `--cwd`. Activity that already exists when a PR is registered counts as seen; pass `--include-existing` to evaluate it.
 
+### Bash completion
+
+```sh
+# Install it for future shells (requires the bash-completion package)
+mkdir -p ~/.local/share/bash-completion/completions
+sentinel completion bash > ~/.local/share/bash-completion/completions/sentinel
+
+# Or load it in the current shell only
+source <(sentinel completion bash)
+```
+
+Completion covers commands, options, the PRs Sentinel is already watching (`watch`, `unwatch`, `check`) and Jira ticket keys (`tickets dismiss`).
+
 ### TUI keys
 
 `↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `t` switch to the Jira tickets list (`o` open, `d` dismiss) · `s` settings · `R` reload config and theme · `S` retry starting the daemon · `q` quit. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
