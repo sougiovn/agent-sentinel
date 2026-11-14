@@ -14,6 +14,7 @@ import { newItems, normalize } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq, writeClaudeHookSettings } from "../src/spawn/launcher.ts";
 import { getPaths } from "../src/core/paths.ts";
 import { cycleEnum, FIELDS, filterFields, parseValue } from "../src/tui/settings.ts";
+import { DEFAULT_THEME, loadTheme, parseTheme, saveTheme, statusColor } from "../src/tui/theme.ts";
 import { fakeGit } from "./fakes.ts";
 import type { Exec } from "../src/core/exec.ts";
 import { Store } from "../src/core/db.ts";
@@ -72,6 +73,42 @@ describe("config", () => {
     expect(r.ok && r.config.pollIntervalSec).toBe(60);
     writeFileSync(p, "{bad");
     expect(loadConfig(p).ok).toBe(false);
+  });
+});
+
+describe("theme", () => {
+  test("load creates a full default theme file", () => {
+    const p = join(mkdtempSync(join(tmpdir(), "theme-")), "theme.json");
+    const r = loadTheme(p);
+    expect(r.ok && r.theme.accent).toBe("#2ecc71");
+    const saved = JSON.parse(readFileSync(p, "utf8"));
+    expect(saved.text).toBe("#ecf0f1");
+    expect(saved.selectionBackground).toBe("#2c3e50");
+    expect(saved.statuses.in_review).toBe("#2ecc71");
+  });
+  test("partial theme falls back to defaults and merges status colours", () => {
+    const r = parseTheme(JSON.stringify({ accent: "#ff00ff", statuses: { in_review: "#123456" } }));
+    expect(r.ok && r.theme.accent).toBe("#ff00ff");
+    expect(r.ok && r.theme.text).toBe(DEFAULT_THEME.text);
+    expect(r.ok && r.theme.statuses.in_review).toBe("#123456");
+    expect(r.ok && r.theme.statuses.error).toBe("#e74c3c");
+  });
+  test("invalid colours and unknown keys are reported", () => {
+    expect(parseTheme("{nope").ok).toBe(false);
+    expect(parseTheme(JSON.stringify({ accent: "not a colour" })).ok).toBe(false);
+    expect(parseTheme(JSON.stringify({ accent: "#ff00ff", accentt: "#ffffff" })).ok).toBe(false);
+  });
+  test("status colours fall back to the text colour", () => {
+    expect(statusColor(DEFAULT_THEME, "in_review")).toBe("#2ecc71");
+    expect(statusColor(DEFAULT_THEME, "unknown")).toBe(DEFAULT_THEME.text);
+    expect(statusColor({ ...DEFAULT_THEME, statuses: {} }, "in_review")).toBe(DEFAULT_THEME.text);
+  });
+  test("save round-trips and rejects invalid values", () => {
+    const p = join(mkdtempSync(join(tmpdir(), "theme-")), "theme.json");
+    saveTheme(p, { ...DEFAULT_THEME, accent: "red" });
+    const r = loadTheme(p);
+    expect(r.ok && r.theme.accent).toBe("red");
+    expect(() => saveTheme(p, { ...DEFAULT_THEME, accent: "nope!" })).toThrow();
   });
 });
 

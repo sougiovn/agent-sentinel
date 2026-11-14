@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { rgbToHex, type CapturedFrame } from "@opentui/core";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getPaths, ensureHome } from "../src/core/paths.ts";
 import { defaultConfig, loadConfig, saveConfig } from "../src/core/config.ts";
 import { parsePrRef } from "../src/core/pr-ref.ts";
 import { App, type RpcClient } from "../src/tui/app.tsx";
+import { DEFAULT_THEME, saveTheme } from "../src/tui/theme.ts";
 import { fakeGit, makeDaemon } from "./fakes.ts";
 
 test("TUI renders offline state and settings view, and saves an enum toggle", async () => {
@@ -30,6 +32,31 @@ test("TUI renders offline state and settings view, and saves an enum toggle", as
   await Bun.sleep(100);
   const r = loadConfig(paths.config);
   expect(r.ok && r.config.multiplexer).toBe("herdr");
+  t.renderer.destroy();
+});
+
+test("TUI applies a custom theme and reloads it when the file changes", async () => {
+  const paths = getPaths(mkdtempSync(join(tmpdir(), "tui-theme-")));
+  ensureHome(paths);
+  writeFileSync(paths.theme, JSON.stringify({ accent: "#ff00ff" }));
+
+  const fgOf = (frame: CapturedFrame, text: string): string | undefined => {
+    for (const line of frame.lines) for (const span of line.spans) if (span.text.includes(text)) return rgbToHex(span.fg);
+  };
+  const t = await testRender(() => <App paths={paths} autoStart={false} />, { width: 120, height: 24 });
+  const frame = async (ms = 100) => {
+    await Bun.sleep(ms);
+    await t.renderOnce();
+    return t.captureSpans();
+  };
+  expect(fgOf(await frame(), "Agent Sentinel")).toBe("#ff00ff");
+
+  saveTheme(paths.theme, { ...DEFAULT_THEME, accent: "#00ff00" }); // atomic save, via rename
+  expect(fgOf(await frame(500), "Agent Sentinel")).toBe("#00ff00");
+
+  writeFileSync(paths.theme, JSON.stringify({ accent: "#12345" })); // 5 hex digits is invalid
+  expect(fgOf(await frame(500), "Agent Sentinel")).toBe("#00ff00");
+  expect(t.captureCharFrame()).toContain("Theme error (last good theme in use)");
   t.renderer.destroy();
 });
 

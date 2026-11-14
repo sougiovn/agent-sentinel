@@ -14,6 +14,7 @@ import { ago, prGroup, prLine, sortByGroup } from "../cli/format.ts";
 import { cycleField, displayField, FORM_FIELDS, initialForm, watchRequest, type NewWatchForm } from "./new-watch.ts";
 import { filterPrs, filterWatched } from "./pr-filter.ts";
 import { cycleEnum, displayValue, editText, FIELDS, filterFields, parseValue } from "./settings.ts";
+import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type Theme } from "./theme.ts";
 
 type View = "list" | "history" | "settings" | "pick-pr" | "new-watch";
 
@@ -21,22 +22,6 @@ type View = "list" | "history" | "settings" | "pick-pr" | "new-watch";
 export interface RpcClient {
   call<M extends RpcMethod>(method: M, params: RpcMethods[M][0], timeoutMs?: number): Promise<RpcMethods[M][1]>;
 }
-
-const MODAL_BG = "#1e272e";
-
-const STATUS_COLOR: Record<string, string> = {
-  no_changes: "#7f8c8d",
-  no_action: "#95a5a6",
-  pending: "#7f8c8d",
-  fix_spawned: "#3498db",
-  fix_running: "#f1c40f",
-  spawn_failed: "#e74c3c",
-  error: "#e74c3c",
-  queued: "#3498db",
-  started: "#f1c40f",
-  in_review: "#2ecc71",
-  transition_failed: "#e67e22",
-};
 
 /** Most Jira ticket rows shown before the list scrolls. */
 const TICKET_ROWS = 6;
@@ -91,6 +76,8 @@ export function App(props: AppProps) {
   const [confirmDelete, setConfirmDelete] = createSignal(false);
   const [config, setConfig] = createSignal<Config | null>(null);
   const [configError, setConfigError] = createSignal<string | null>(null);
+  const [theme, setTheme] = createSignal<Theme>(DEFAULT_THEME);
+  const [themeError, setThemeError] = createSignal<string | null>(null);
   const [fieldSel, setFieldSel] = createSignal(0);
   const [settingsQuery, setSettingsQuery] = createSignal("");
   /** The settings filter input has focus. */
@@ -155,8 +142,17 @@ export function App(props: AppProps) {
     } else setConfigError(r.error);
   };
 
+  const readTheme = () => {
+    const r = loadTheme(props.paths.theme);
+    if (r.ok) {
+      setTheme(r.theme);
+      setThemeError(null);
+    } else setThemeError(r.error);
+  };
+
   const reloadAll = async () => {
     readConfig();
+    readTheme();
     if (online()) {
       const r = await client.call("reload", {}).catch((e: Error) => ({ ok: false, error: e.message }));
       if (r.ok) notify("Config reloaded (TUI + daemon)");
@@ -209,6 +205,14 @@ export function App(props: AppProps) {
   };
 
   readConfig();
+  readTheme();
+  const themeWatcher = watchTheme(props.paths.theme, (r) => {
+    if (r.ok) {
+      setTheme(r.theme);
+      setThemeError(null);
+    } else setThemeError(r.error);
+  });
+  onCleanup(() => themeWatcher.close());
   void refresh();
   const interval = setInterval(refresh, 2000);
   onCleanup(() => clearInterval(interval));
@@ -722,10 +726,10 @@ export function App(props: AppProps) {
   return (
     <box flexDirection="column" width="100%" height="100%" padding={1}>
       <box flexDirection="row" justifyContent="space-between" height={1}>
-        <text fg="#2ecc71">
+        <text fg={theme().accent}>
           <b>Agent Sentinel</b>
         </text>
-        <text fg="#7f8c8d">
+        <text fg={theme().textMuted}>
           {online() && status()
             ? `${status()!.multiplexer} · every ${status()!.pollIntervalSec}s · ${
                 status()!.nextPollAt ? `next in ${Math.max(0, Math.round((status()!.nextPollAt! - Date.now()) / 1000))}s` : "polling…"
@@ -739,28 +743,33 @@ export function App(props: AppProps) {
       </box>
 
       <Show when={!online()}>
-        <box border borderColor="#e67e22" padding={1} marginTop={1}>
-          <text fg="#e67e22">
+        <box border borderColor={theme().warning} padding={1} marginTop={1}>
+          <text fg={theme().warning}>
             {starting() ? "Starting Sentinel daemon…" : "Sentinel daemon is not running. Press S (shift+s) to start it."}
           </text>
         </box>
       </Show>
       <Show when={status()?.configError || configError()}>
-        <box border borderColor="#e74c3c" paddingLeft={1} marginTop={1}>
-          <text fg="#e74c3c">Config error (last good config in use): {status()?.configError || configError()}</text>
+        <box border borderColor={theme().error} paddingLeft={1} marginTop={1}>
+          <text fg={theme().error}>Config error (last good config in use): {status()?.configError || configError()}</text>
+        </box>
+      </Show>
+      <Show when={themeError()}>
+        <box border borderColor={theme().error} paddingLeft={1} marginTop={1}>
+          <text fg={theme().error}>Theme error (last good theme in use): {themeError()}</text>
         </box>
       </Show>
 
       <Switch>
         <Match when={view() === "list" || view() === "pick-pr" || view() === "new-watch" || view() === "settings"}>
           <box flexDirection="column" border title=" Watched PRs " marginTop={1} flexGrow={1} paddingLeft={1} paddingRight={1}>
-            <text fg="#7f8c8d" flexShrink={0}>
+            <text fg={theme().textMuted} flexShrink={0}>
               {pad("PR", widths().pr)} {pad("AGENT", widths().agent)} {pad("SESSION", widths().session)}{" "}
               {pad("CHECKED", widths().checked)} {pad("STATUS", widths().status)} REASON
             </text>
             <Show when={listFiltering() || listQuery() !== ""}>
               <box flexDirection="row" height={1} flexShrink={0}>
-                <text fg="#2ecc71">/ </text>
+                <text fg={theme().accent}>/ </text>
                 <Show when={listFiltering()} fallback={<text>{listQuery()}</text>}>
                   <input
                     value={listQuery()}
@@ -776,25 +785,25 @@ export function App(props: AppProps) {
               </box>
             </Show>
             <Show when={prs().length > 0 && shownPrs().length === 0}>
-              <text fg="#7f8c8d">No watched PRs match "{listQuery()}".</text>
+              <text fg={theme().textMuted}>No watched PRs match "{listQuery()}".</text>
             </Show>
-            <Show when={prs().length > 0} fallback={<text fg="#7f8c8d">No PRs watched. Press n to pick one of your PRs, or hand off from an agent with `sentinel watch &lt;pr&gt;`.</text>}>
+            <Show when={prs().length > 0} fallback={<text fg={theme().textMuted}>No PRs watched. Press n to pick one of your PRs, or hand off from an agent with `sentinel watch &lt;pr&gt;`.</text>}>
               <For each={shownPrs()}>
                 {(pr, i) => (
                   <>
                     <Show when={i() === 0 || prGroup(shownPrs()[i() - 1]!.id) !== prGroup(pr.id)}>
-                      <text fg="#3498db" flexShrink={0} marginTop={i() === 0 ? 0 : 1}>
+                      <text fg={theme().info} flexShrink={0} marginTop={i() === 0 ? 0 : 1}>
                         <b>{prGroup(pr.id)}</b>
                       </text>
                     </Show>
-                    <box flexDirection="row" flexShrink={0} backgroundColor={i() === sel() && !ticketFocus() ? "#2c3e50" : undefined}>
+                    <box flexDirection="row" flexShrink={0} backgroundColor={i() === sel() && !ticketFocus() ? theme().selectionBackground : undefined}>
                     <text>
                       {pad(`  ${prLine(pr)}`, widths().pr)} {pad(pr.agent, widths().agent)}{" "}
                       {pad(pr.session_id.slice(0, 8) + (pr.session?.paused ? " ⏸" : ""), widths().session)}{" "}
                       {pad(ago(pr.last_checked_at), widths().checked)}{" "}
                     </text>
-                    <text fg={STATUS_COLOR[pr.last_status] ?? "#ecf0f1"}>{pad(pr.last_status, widths().status)} </text>
-                    <text fg="#bdc3c7">{pad((pr.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
+                    <text fg={statusColor(theme(), pr.last_status)}>{pad(pr.last_status, widths().status)} </text>
+                    <text fg={theme().textSecondary}>{pad((pr.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
                     </box>
                   </>
                 )}
@@ -805,29 +814,29 @@ export function App(props: AppProps) {
             <box
               flexDirection="column"
               border
-              borderColor={ticketFocus() ? "#2ecc71" : undefined}
+              borderColor={ticketFocus() ? theme().accent : undefined}
               title={` Jira tickets · label "${status()?.jira?.label ?? ""}" `}
               flexShrink={0}
               paddingLeft={1}
               paddingRight={1}
             >
               <Show when={status()?.jira?.error}>
-                <text fg="#e74c3c">Jira poll failed: {status()!.jira.error}</text>
+                <text fg={theme().error}>Jira poll failed: {status()!.jira.error}</text>
               </Show>
               <Show
                 when={tickets().length > 0}
-                fallback={<text fg="#7f8c8d">No tickets picked up yet. Assign yourself a ticket and add the label to start an agent on it.</text>}
+                fallback={<text fg={theme().textMuted}>No tickets picked up yet. Assign yourself a ticket and add the label to start an agent on it.</text>}
               >
                 <For each={ticketWindow()}>
                   {(t) => (
-                    <box flexDirection="row" flexShrink={0} backgroundColor={ticketFocus() && t === currentTicket() ? "#2c3e50" : undefined}>
+                    <box flexDirection="row" flexShrink={0} backgroundColor={ticketFocus() && t === currentTicket() ? theme().selectionBackground : undefined}>
                       <text>
                         {pad(`${t.key} - ${t.summary ?? ""}`, widths().pr)} {pad("claude", widths().agent)}{" "}
                         {pad(t.session_id.slice(0, 8) + (t.session?.paused ? " ⏸" : ""), widths().session)}{" "}
                         {pad(ago(t.picked_at), widths().checked)}{" "}
                       </text>
-                      <text fg={STATUS_COLOR[t.last_status] ?? "#ecf0f1"}>{pad(t.last_status, widths().status)} </text>
-                      <text fg="#bdc3c7">{pad((t.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
+                      <text fg={statusColor(theme(), t.last_status)}>{pad(t.last_status, widths().status)} </text>
+                      <text fg={theme().textSecondary}>{pad((t.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
                     </box>
                   )}
                 </For>
@@ -839,7 +848,7 @@ export function App(props: AppProps) {
               <text>
                 {currentTicket()!.url} · session {currentTicket()!.session_id}
               </text>
-              <text fg="#7f8c8d">
+              <text fg={theme().textMuted}>
                 cwd {currentTicket()!.session?.cwd ?? currentTicket()!.cwd} · pane {currentTicket()!.session?.pane_id ?? "none"} · agent{" "}
                 {currentTicket()!.session?.state ?? "?"}
                 {currentTicket()!.session?.paused ? " (paused)" : ""}
@@ -851,7 +860,7 @@ export function App(props: AppProps) {
               <text>
                 {current()!.url} · session {current()!.session_id}
               </text>
-              <text fg="#7f8c8d">
+              <text fg={theme().textMuted}>
                 cwd {current()!.cwd} · pane {current()!.session?.pane_id ?? "none"} · agent{" "}
                 {current()!.session?.state ?? "?"}
                 {current()!.session?.paused ? " (paused)" : ""}
@@ -862,14 +871,14 @@ export function App(props: AppProps) {
 
         <Match when={view() === "history"}>
           <scrollbox border title={` History · ${current()?.id ?? ""} `} marginTop={1} flexGrow={1} paddingLeft={1}>
-            <For each={history()} fallback={<text fg="#7f8c8d">No events yet.</text>}>
+            <For each={history()} fallback={<text fg={theme().textMuted}>No events yet.</text>}>
               {(ev) => (
                 <box flexDirection="column" marginBottom={1}>
-                  <text fg="#3498db">
+                  <text fg={theme().info}>
                     {new Date(ev.ts).toLocaleString()} · {ev.kind}
                   </text>
                   <Show when={ev.detail}>
-                    <text fg="#bdc3c7">{JSON.stringify(ev.detail).slice(0, 600)}</text>
+                    <text fg={theme().textSecondary}>{JSON.stringify(ev.detail).slice(0, 600)}</text>
                   </Show>
                 </box>
               )}
@@ -883,9 +892,9 @@ export function App(props: AppProps) {
         <box position="absolute" top={0} left={0} width="100%" height="100%" zIndex={10} alignItems="center" justifyContent="center">
           <Switch>
             <Match when={view() === "pick-pr"}>
-              <box flexDirection="column" border borderColor="#2ecc71" title=" Watch a PR " backgroundColor={MODAL_BG} width={modalWidth()} height={pickerHeight()} paddingLeft={1} paddingRight={1}>
+              <box flexDirection="column" border borderColor={theme().accent} title=" Watch a PR " backgroundColor={theme().modalBackground} width={modalWidth()} height={pickerHeight()} paddingLeft={1} paddingRight={1}>
                 <box flexDirection="row" height={1}>
-                  <text fg="#2ecc71">filter › </text>
+                  <text fg={theme().accent}>filter › </text>
                   <input
                     value={query()}
                     focused
@@ -899,27 +908,27 @@ export function App(props: AppProps) {
                 </box>
                 <Switch>
                   <Match when={myPrsError()}>
-                    <text fg="#e74c3c">Could not list your PRs: {myPrsError()}</text>
+                    <text fg={theme().error}>Could not list your PRs: {myPrsError()}</text>
                   </Match>
                   <Match when={myPrs() === null}>
-                    <text fg="#7f8c8d">Loading your open PRs…</text>
+                    <text fg={theme().textMuted}>Loading your open PRs…</text>
                   </Match>
                   <Match when={filtered().length === 0}>
-                    <text fg="#7f8c8d">{myPrs()!.length === 0 ? "You have no open PRs." : "No PRs match the filter."}</text>
+                    <text fg={theme().textMuted}>{myPrs()!.length === 0 ? "You have no open PRs." : "No PRs match the filter."}</text>
                   </Match>
                   <Match when={true}>
-                    <text fg="#7f8c8d">
+                    <text fg={theme().textMuted}>
                       {filtered().length} of {myPrs()!.length} open PRs
                     </text>
                     <For each={pickWindow()}>
                       {(pr) => (
-                        <box flexDirection="row" backgroundColor={pr === filtered()[pickSel()] ? "#2c3e50" : undefined}>
+                        <box flexDirection="row" backgroundColor={pr === filtered()[pickSel()] ? theme().selectionBackground : undefined}>
                           <text>
                             {pad(`${pr.owner}/${pr.repo}`, pickWidths().repo)} {pad(`#${pr.number}`, 7)}{" "}
                           </text>
-                          <text fg="#bdc3c7">{pad(pr.title, pickWidths().title)} </text>
-                          <text fg="#7f8c8d">{pr.isDraft ? "draft " : ""}</text>
-                          <text fg="#3498db">{pr.watched ? "watched" : ""}</text>
+                          <text fg={theme().textSecondary}>{pad(pr.title, pickWidths().title)} </text>
+                          <text fg={theme().textMuted}>{pr.isDraft ? "draft " : ""}</text>
+                          <text fg={theme().info}>{pr.watched ? "watched" : ""}</text>
                         </box>
                       )}
                     </For>
@@ -928,21 +937,21 @@ export function App(props: AppProps) {
               </box>
             </Match>
             <Match when={view() === "new-watch" && form()}>
-              <box flexDirection="column" border borderColor="#2ecc71" title=" New watch " backgroundColor={MODAL_BG} width={modalWidth()} paddingLeft={1} paddingRight={1} paddingBottom={1}>
+              <box flexDirection="column" border borderColor={theme().accent} title=" New watch " backgroundColor={theme().modalBackground} width={modalWidth()} paddingLeft={1} paddingRight={1} paddingBottom={1}>
                 <text>
                   {form()!.pr.owner}/{form()!.pr.repo} #{form()!.pr.number} · {form()!.pr.title}
                 </text>
-                <text fg="#7f8c8d" marginBottom={1}>
+                <text fg={theme().textMuted} marginBottom={1}>
                   {form()!.pr.url} · Sentinel creates a new claude session for this PR
                 </text>
                 <For each={FORM_FIELDS}>
                   {(field, i) => (
-                    <box flexDirection="row" backgroundColor={i() === formSel() ? "#2c3e50" : undefined}>
-                      <text fg="#7f8c8d">{pad(field.label, 20)} </text>
+                    <box flexDirection="row" backgroundColor={i() === formSel() ? theme().selectionBackground : undefined}>
+                      <text fg={theme().textMuted}>{pad(field.label, 20)} </text>
                       <Show
                         when={formEditing() !== null && formEditing() === field.key}
                         fallback={
-                          <text fg={field.kind === "submit" ? "#2ecc71" : field.kind === "fixed" ? "#7f8c8d" : undefined}>
+                          <text fg={field.kind === "submit" ? theme().accent : field.kind === "fixed" ? theme().textMuted : undefined}>
                             {field.kind === "submit" && submitting() ? "[ Working… ]" : displayField(field.key, form()!)}
                           </text>
                         }
@@ -959,18 +968,18 @@ export function App(props: AppProps) {
                   )}
                 </For>
                 <Show when={formMsg()}>
-                  <text fg={formMsg()!.error ? "#e74c3c" : "#f1c40f"} marginTop={1}>
+                  <text fg={formMsg()!.error ? theme().error : theme().pending} marginTop={1}>
                     {formMsg()!.text}
                   </text>
                 </Show>
               </box>
             </Match>
             <Match when={view() === "settings"}>
-              <box flexDirection="column" border borderColor="#2ecc71" title={` Settings · ${props.paths.config} `} backgroundColor={MODAL_BG} width={modalWidth()} height={settingsHeight()} paddingLeft={1} paddingRight={1}>
-                <Show when={config()} fallback={<text fg="#e74c3c">Config could not be loaded: {configError()}</text>}>
+              <box flexDirection="column" border borderColor={theme().accent} title={` Settings · ${props.paths.config} `} backgroundColor={theme().modalBackground} width={modalWidth()} height={settingsHeight()} paddingLeft={1} paddingRight={1}>
+                <Show when={config()} fallback={<text fg={theme().error}>Config could not be loaded: {configError()}</text>}>
                   <Show when={showSettingsFilter()}>
                     <box flexDirection="row" height={1}>
-                      <text fg="#2ecc71">/ </text>
+                      <text fg={theme().accent}>/ </text>
                       <Show when={settingsFiltering()} fallback={<text>{settingsQuery()}</text>}>
                         <input
                           value={settingsQuery()}
@@ -986,12 +995,12 @@ export function App(props: AppProps) {
                     </box>
                   </Show>
                   <Show when={shownFields().length === 0}>
-                    <text fg="#7f8c8d">No settings match "{settingsQuery()}".</text>
+                    <text fg={theme().textMuted}>No settings match "{settingsQuery()}".</text>
                   </Show>
                   <For each={settingsWindow()}>
                     {(field) => (
-                      <box flexDirection="row" height={1} backgroundColor={field === selectedField() ? "#2c3e50" : undefined}>
-                        <text fg="#7f8c8d">{pad(field.label, 38)} </text>
+                      <box flexDirection="row" height={1} backgroundColor={field === selectedField() ? theme().selectionBackground : undefined}>
+                        <text fg={theme().textMuted}>{pad(field.label, 38)} </text>
                         <Show when={editing() !== null && field === selectedField()} fallback={<text>{pad(displayValue(field, config()!), modalWidth() - 44)}</text>}>
                           <input
                             value={editing()!}
@@ -1012,8 +1021,8 @@ export function App(props: AppProps) {
       </Show>
 
       <box height={1} marginTop={1}>
-        <Show when={flash()} fallback={<text fg="#7f8c8d">{footer()}</text>}>
-          <text fg={flash()!.error ? "#e74c3c" : "#2ecc71"}>{flash()!.text}</text>
+        <Show when={flash()} fallback={<text fg={theme().textMuted}>{footer()}</text>}>
+          <text fg={flash()!.error ? theme().error : theme().success}>{flash()!.text}</text>
         </Show>
       </box>
     </box>

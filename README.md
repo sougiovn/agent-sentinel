@@ -43,9 +43,37 @@ Set `jira.enabled` (in `config.json` or the settings screen), then assign yourse
 
 ### TUI keys
 
-`↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `t` switch to the Jira tickets list (`o` open, `d` dismiss) · `s` settings · `R` reload config · `S` retry starting the daemon · `q` quit. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
+`↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `t` switch to the Jira tickets list (`o` open, `d` dismiss) · `s` settings · `R` reload config and theme · `S` retry starting the daemon · `q` quit. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
 In settings: `/` filters by name, `enter` edits a field or cycles an enum, and `e` opens a prompt template in `$EDITOR`.
 In the PR picker: type to filter by org, repo, `#number` or title, `↑/↓` to move, `enter` to pick. In the form: `←/→` or `space` changes a value, `e` types a custom model or path, and `enter` on `[ Watch ]` starts the watch.
+
+### Theme
+
+The dashboard's colours live in `theme.json`, created with the defaults when the dashboard first runs. Every key is optional, so you only need the colours you want to change.
+
+```jsonc
+{
+  "text": "#ecf0f1",              // default text, and statuses with no colour
+  "textSecondary": "#bdc3c7",     // PR titles, reasons, event details
+  "textMuted": "#7f8c8d",         // hints, labels, table headers, footer
+  "accent": "#2ecc71",            // title and focused borders
+  "info": "#3498db",              // repo headings, timestamps
+  "success": "#2ecc71",           // success messages
+  "warning": "#e67e22",           // warnings, like the daemon being offline
+  "error": "#e74c3c",             // errors and invalid config
+  "pending": "#f1c40f",           // work-in-progress messages
+  "selectionBackground": "#2c3e50",
+  "modalBackground": "#1e272e",
+  "statuses": {                   // per-status colours, keyed by last_status
+    "no_changes": "#7f8c8d", "no_action": "#95a5a6", "pending": "#7f8c8d",
+    "fix_spawned": "#3498db", "fix_running": "#f1c40f", "spawn_failed": "#e74c3c",
+    "error": "#e74c3c", "queued": "#3498db", "started": "#f1c40f",
+    "in_review": "#2ecc71", "transition_failed": "#e67e22"
+  }
+}
+```
+
+Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `transparent`. The dashboard watches the file and applies edits immediately. Invalid JSON or colours show a banner and keep the last good theme; delete the file to go back to the defaults.
 
 ## How it works
 
@@ -68,6 +96,7 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
 | File | Purpose |
 | --- | --- |
 | `config.json` | Settings. Watched by the daemon; invalid edits are logged and the last good config is kept. |
+| `theme.json` | Dashboard colours. Watched by the TUI; invalid edits keep the last good theme. |
 | `sentinel.db` | SQLite: `prs`, `seen_items`, `pending_items`, `sessions`, `events` (last 50 per PR), `tickets` |
 | `sentinel.sock`, `sentinel.pid`, `sentinel.log` | Daemon socket, pidfile and log |
 | `prompts/` | Fix prompts delivered to agents (pruned after 7 days) |

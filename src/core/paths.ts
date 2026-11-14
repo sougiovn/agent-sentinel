@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 export interface Paths {
   home: string;
   config: string;
+  theme: string;
   db: string;
   socket: string;
   pid: string;
@@ -22,6 +23,7 @@ export function getPaths(home = sentinelHome()): Paths {
   return {
     home,
     config: join(home, "config.json"),
+    theme: join(home, "theme.json"),
     db: join(home, "sentinel.db"),
     socket: join(home, "sentinel.sock"),
     pid: join(home, "sentinel.pid"),
