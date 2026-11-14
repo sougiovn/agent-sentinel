@@ -245,6 +245,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel restart` | Stop the daemon and start it again |
 | `sentinel skill show` | Print the agent skill |
 | `sentinel skill install` | Install the skill to `~/.claude/skills/sentinel/` and `~/.codex/skills/sentinel/` |
+| `sentinel completion bash` | Print a bash completion script |
 | `sentinel daemon [--quiet]` | Run the daemon in the foreground |
 | `sentinel hook idle\|busy\|exit` | Used by agent hooks; not meant to be run by hand |
 
