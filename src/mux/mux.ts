@@ -31,7 +31,7 @@ export class MuxUnavailableError extends Error {}
 
 /** A terminal multiplexer Sentinel can open shell panes in. */
 export interface Multiplexer {
-  readonly name: "rex" | "herdr";
+  readonly name: "rex" | "herdr" | "hc";
   /** Throws MuxUnavailableError when the multiplexer can't be reached. */
   ensureAvailable(): Promise<void>;
   paneExists(paneId: string): Promise<boolean>;

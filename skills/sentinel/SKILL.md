@@ -5,7 +5,7 @@ description: Hand off GitHub pull requests to Agent Sentinel so it watches them 
 
 # Agent Sentinel
 
-Sentinel is a background daemon that polls PRs, uses a cheap Claude model to decide whether new comments or failing checks need work, and then resumes **this** agent session in a terminal multiplexer pane (Rex or Herdr) with the details.
+Sentinel is a background daemon that polls PRs, uses a cheap Claude model to decide whether new comments or failing checks need work, and then resumes **this** agent session in a terminal multiplexer pane (Rex, Herdr or herdr-core) with the details.
 
 ## Hand off PRs
 

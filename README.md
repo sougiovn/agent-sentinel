@@ -1,6 +1,6 @@
 # Agent Sentinel
 
-A background daemon that watches GitHub PRs handed off by AI agent sessions (Claude Code, Codex), or picked from its dashboard. It polls for new review comments and failing checks, asks a cheap Claude model whether they need work, and resumes the agent session in your multiplexer ([Rex](https://www.superlogical.com/rex/docs/automate/cli) or [Herdr](https://herdr.dev/)) to fix them. For PRs picked in the dashboard, Sentinel starts a new Claude session. It can also watch Jira: label a ticket assigned to you, and Sentinel starts a Claude session that works the ticket.
+A background daemon that watches GitHub PRs handed off by AI agent sessions (Claude Code, Codex), or picked from its dashboard. It polls for new review comments and failing checks, asks a cheap Claude model whether they need work, and resumes the agent session in your multiplexer ([Rex](https://www.superlogical.com/rex/docs/automate/cli), [Herdr](https://herdr.dev/) or herdr-core's `hc`) to fix them. For PRs picked in the dashboard, Sentinel starts a new Claude session. It can also watch Jira: label a ticket assigned to you, and Sentinel starts a Claude session that works the ticket.
 
 See [docs/features.md](docs/features.md) for a full description of what's implemented and how each part behaves.
 
@@ -14,7 +14,7 @@ ln -s "$PWD/dist/sentinel" ~/.local/bin/sentinel
 sentinel skill install   # teaches Claude Code / Codex how to hand off PRs
 ```
 
-Jira tickets also need the [Atlassian CLI](https://developer.atlassian.com/cloud/acli/) (`acli jira auth login`). Requires `gh` (authenticated), `claude`, and `rex` or `herdr` on `PATH`. `mise` installs `bun` and `gh`; install `claude`, `codex`, Rex and Herdr with their own installers. Herdr's server must already be running; Sentinel doesn't start it.
+Jira tickets also need the [Atlassian CLI](https://developer.atlassian.com/cloud/acli/) (`acli jira auth login`). Requires `gh` (authenticated), `claude`, and `rex`, `herdr` or `hc` on `PATH`. `mise` installs `bun` and `gh`; install `claude`, `codex`, Rex and Herdr with their own installers. The Herdr server or the herdr-core core (`hc server start`) must already be running; Sentinel doesn't start either.
 
 If you run Claude Code with its sandbox on, add `~/.config/sentinel/sentinel.sock` to `sandbox.network.allowUnixSockets` in `~/.claude/settings.json`, or `sentinel watch` from your own sessions can't reach the daemon. Sessions Sentinel launches get this allowance automatically.
 
@@ -107,7 +107,7 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
 
 ```jsonc
 {
-  "multiplexer": "rex",                 // or "herdr"
+  "multiplexer": "rex",                 // or "herdr", "hc"
   "pollIntervalSec": 300,
   "evaluator": { "model": "sonnet", "maxBudgetUsd": 0, "failedLogLines": 150 },  // budget 0 = no cap
   "ignoredAuthors": ["@me"],

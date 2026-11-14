@@ -46,7 +46,7 @@ export const TICKET_MODES = ["pr-watch", "pr", "plan"] as const;
 export type TicketMode = (typeof TICKET_MODES)[number];
 
 export const ConfigSchema = z.object({
-  multiplexer: z.enum(["rex", "herdr"]).default("rex"),
+  multiplexer: z.enum(["rex", "herdr", "hc"]).default("rex"),
   pollIntervalSec: z.number().int().min(30).default(300),
   evaluator: z
     .object({
