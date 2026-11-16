@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
 import { rgbToHex, type CapturedFrame } from "@opentui/core";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getPaths, ensureHome } from "../src/core/paths.ts";
@@ -368,5 +368,167 @@ test("TUI shows picked-up Jira tickets and dismisses one", async () => {
   f = await frame();
   expect(t0.store.getTicket("CP-7")!.dismissed).toBe(1);
   expect(f).not.toContain("CP-7 - Add audit log");
+  t.renderer.destroy();
+});
+
+test("TUI repos view lists worktrees with their watched PR and Jira ticket", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+  const web = join(root, "web");
+  const wt = join(root, "wt", "CP-7-fix");
+  mkdirSync(join(web, ".git"), { recursive: true });
+  mkdirSync(wt, { recursive: true });
+  const porcelain = `worktree ${web}\nHEAD aaaa\nbranch refs/heads/main\n\nworktree ${wt}\nHEAD bbbb\nbranch refs/heads/CP-7-fix\n\n`;
+  const t0 = makeDaemon({ exec: fakeGit({ [web]: "git@github.com:acme/web.git" }, { [web]: porcelain }) });
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [root];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  t0.gh.add(parsePrRef("acme/web#1"), { title: "Fix login redirect" });
+  await t0.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s", cwd: wt });
+  t0.store.insertTicket({ key: "CP-7", url: "https://acme.atlassian.net/browse/CP-7", summary: "Login loops", sessionId: "t", cwd: root, now: 1, session: {} });
+  const opened: string[] = [];
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} openUrl={(u) => opened.push(u)} />, { width: 140, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("g");
+  const f = await frame();
+  expect(f).toContain("1 repo · 2 worktrees · 1 with a watched PR or ticket");
+  expect(f).toContain("acme/web");
+  expect(f).toContain("main checkout");
+  expect(f).toContain("CP-7-fix");
+  expect(f).toContain("PR #1 - Fix login redirect");
+  expect(f).toContain("CP-7 - Login loops");
+
+  t.mockInput.pressKey("o"); // the main checkout has nothing to open
+  await frame();
+  expect(opened).toEqual([]);
+  t.mockInput.pressArrow("down");
+  await frame();
+  t.mockInput.pressKey("o");
+  await frame();
+  expect(opened).toEqual(["https://github.com/acme/web/pull/1"]);
+
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("login");
+  let ff = await frame();
+  expect(ff).toContain("1 shown");
+  expect(ff).toContain("PR #1 - Fix login redirect");
+  expect(ff).not.toContain("main checkout");
+  t.mockInput.pressEnter(); // leave the input; the filter stays
+  await frame();
+  t.mockInput.pressKey("o");
+  await frame();
+  expect(opened).toEqual(["https://github.com/acme/web/pull/1", "https://github.com/acme/web/pull/1"]);
+  t.mockInput.pressEscape(); // clears the filter
+  ff = await frame();
+  expect(ff).toContain("main checkout");
+
+  t.mockInput.pressEscape();
+  expect(await frame()).toContain("Watched PRs");
+  t.renderer.destroy();
+});
+
+test("TUI repos view scrolls inside its box and keeps the footer visible", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+  const origins: Record<string, string> = {};
+  for (let i = 0; i < 30; i++) {
+    const dir = join(root, `repo-${String(i).padStart(2, "0")}`);
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    origins[dir] = `git@github.com:acme/repo-${String(i).padStart(2, "0")}.git`;
+  }
+  const t0 = makeDaemon({ exec: fakeGit(origins) });
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [root];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 120, height: 24 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("g");
+  let f = await frame();
+  const lines = f.split("\n");
+  expect(lines.findIndex((l) => l.includes("esc back"))).toBeGreaterThan(lines.findIndex((l) => l.includes("acme/repo-00")));
+  expect(f).toContain("o open PR or ticket");
+  expect(f).not.toContain("acme/repo-29");
+
+  for (let i = 0; i < 29; i++) t.mockInput.pressArrow("down");
+  f = await frame();
+  expect(f).toContain("acme/repo-29");
+  expect(f).not.toContain("acme/repo-00");
+  expect(f).toContain("o open PR or ticket");
+  t.renderer.destroy();
+});
+
+test("TUI repos view rescans with r, keeps the selection, and explains empty roots", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+  const web = join(root, "web");
+  mkdirSync(join(web, ".git"), { recursive: true });
+  const main = `worktree ${web}\nHEAD aaaa\nbranch refs/heads/main\n\n`;
+  const worktrees: Record<string, string> = { [web]: `${main}worktree ${root}/wt-b\nHEAD bbbb\nbranch refs/heads/b\n\n` };
+  const t0 = makeDaemon({ exec: fakeGit({ [web]: "git@github.com:acme/web.git" }, worktrees) });
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [root];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 140, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  const selectedLine = () => {
+    const spans = t.captureSpans();
+    return spans.lines.findIndex((l) => l.spans.some((sp) => sp.bg && rgbToHex(sp.bg) === DEFAULT_THEME.selectionBackground.toLowerCase()));
+  };
+  await frame();
+  t.mockInput.pressKey("g");
+  await frame();
+  t.mockInput.pressArrow("down"); // select worktree b
+  let f = await frame();
+  expect(f).toContain("2 worktrees");
+  const lineOfB = f.split("\n").findIndex((l) => l.includes("wt-b"));
+  expect(lineOfB).toBeGreaterThan(0);
+  expect(selectedLine()).toBe(lineOfB);
+
+  // A worktree created before b in git's order; the selection follows b, not the index.
+  worktrees[web] = `${main}worktree ${root}/wt-a\nHEAD cccc\nbranch refs/heads/a\n\nworktree ${root}/wt-b\nHEAD bbbb\nbranch refs/heads/b\n\n`;
+  t.mockInput.pressKey("r");
+  f = await frame();
+  expect(f).toContain("3 worktrees");
+  expect(selectedLine()).toBe(f.split("\n").findIndex((l) => l.includes("wt-b")));
+  expect(f.split("\n").findIndex((l) => l.includes("wt-b"))).toBeGreaterThan(lineOfB);
+
+  cfg.newWatch.repoRoots = [join(root, "missing")];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  t.mockInput.pressKey("r");
+  expect(await frame()).toContain("No git repositories found two levels under");
+  t.renderer.destroy();
+});
+
+test("TUI repos view needs the daemon", async () => {
+  const paths = getPaths(mkdtempSync(join(tmpdir(), "tui-")));
+  ensureHome(paths);
+  const t = await testRender(() => <App paths={paths} autoStart={false} />, { width: 120, height: 30 });
+  await Bun.sleep(300);
+  t.mockInput.pressKey("g");
+  await Bun.sleep(50);
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("Start the daemon first (S)");
   t.renderer.destroy();
 });

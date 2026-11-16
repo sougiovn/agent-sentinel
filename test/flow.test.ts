@@ -1,9 +1,10 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
 import { parsePrRef } from "../src/core/pr-ref.ts";
 import { join } from "node:path";
 import { defaultConfig, saveConfig } from "../src/core/config.ts";
-import { makeDaemon } from "./fakes.ts";
+import { fakeGit, makeDaemon } from "./fakes.ts";
 
 const PR = "acme/web#1";
 const ID = "github.com/acme/web#1";
@@ -472,6 +473,56 @@ describe("new-session watches (TUI)", () => {
     t.gh.add(ref);
     await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: t.paths.home });
     expect((await t.daemon.handle("suggestCwd", { pr: "acme/web#9" })).path).toBe(t.paths.home);
+  });
+});
+
+describe("repos view", () => {
+  test("lists repos under the roots with their worktrees, watched PRs and tickets", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+    const web = join(root, "web");
+    const wt = join(web, ".claude", "worktrees", "CP-7-fix");
+    mkdirSync(join(web, ".git"), { recursive: true });
+    mkdirSync(wt, { recursive: true });
+    const porcelain = `worktree ${web}\nHEAD aaaa\nbranch refs/heads/main\n\nworktree ${wt}\nHEAD bbbb\nbranch refs/heads/CP-7-fix\n\n`;
+    const t = makeDaemon({ exec: fakeGit({ [web]: "git@github.com:acme/web.git" }, { [web]: porcelain }) });
+    const cfg = defaultConfig();
+    cfg.newWatch.repoRoots = [root];
+    saveConfig(t.paths.config, cfg);
+    t.daemon.reload();
+    t.gh.add(ref);
+    await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: wt });
+    t.store.insertTicket({ key: "CP-7", url: "u", summary: "Fix", sessionId: "t", cwd: root, now: 1, session: {} });
+
+    const view = await t.daemon.handle("repos", {});
+    expect(view.roots).toEqual([root]);
+    expect(view.repos.map((r) => [r.path, r.remote])).toEqual([[web, "github.com/acme/web"]]);
+    expect(view.repos[0]!.worktrees.map((w) => [w.path, w.main, w.prs, w.tickets])).toEqual([
+      [web, true, [], []],
+      [wt, false, [ID], ["CP-7"]],
+    ]);
+  });
+});
+
+describe("repos view errors", () => {
+  test("a repo whose worktrees can't be listed is kept with the git error", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+    mkdirSync(join(root, "odd", ".git"), { recursive: true });
+    const t = makeDaemon({ exec: fakeGit() });
+    const cfg = defaultConfig();
+    cfg.newWatch.repoRoots = [root];
+    saveConfig(t.paths.config, cfg);
+    t.daemon.reload();
+    const view = await t.daemon.handle("repos", {});
+    expect(view.repos.map((r) => [r.path, r.remote, r.worktrees, r.error])).toEqual([[join(root, "odd"), null, [], "not a git repository"]]);
+  });
+
+  test("no roots that exist means no repos", async () => {
+    const t = makeDaemon();
+    const cfg = defaultConfig();
+    cfg.newWatch.repoRoots = [join(t.paths.home, "missing")];
+    saveConfig(t.paths.config, cfg);
+    t.daemon.reload();
+    expect((await t.daemon.handle("repos", {})).repos).toEqual([]);
   });
 });
 

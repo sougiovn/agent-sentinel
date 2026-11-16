@@ -22,6 +22,8 @@ import { RexMux } from "../src/mux/rex.ts";
 import type { CreatePaneOptions } from "../src/mux/mux.ts";
 import { GhCli } from "../src/github/gh.ts";
 import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
+import { linkWorktrees, listRepos, namesTicket, parseWorktreeList } from "../src/core/worktrees.ts";
+import { filterRepos, tilde } from "../src/tui/repo-labels.ts";
 import type { MyPr } from "../src/daemon/protocol.ts";
 import { filterPrs, filterWatched } from "../src/tui/pr-filter.ts";
 
@@ -603,5 +605,106 @@ describe("rex naming note", () => {
     expect(rexNamingNote("sentinel-tab")).toContain("shared with other agents");
     expect(rexNamingNote("tab-per-session")).toContain("named this tab after your ticket or PR");
     for (const l of ["sentinel-tab", "tab-per-session"] as const) expect(rexNamingNote(l)).toContain("no `rex window rename`");
+  });
+});
+
+describe("worktrees", () => {
+  test("parses git worktree list --porcelain", () => {
+    const out = [
+      "worktree /w/web",
+      "HEAD aaaa",
+      "branch refs/heads/main",
+      "",
+      "worktree /w/web/.claude/worktrees/CP-7-fix",
+      "HEAD bbbb",
+      "branch refs/heads/feat/CP-7-fix",
+      "locked",
+      "",
+      "worktree /gone",
+      "HEAD cccc",
+      "detached",
+      "prunable gitdir file points to non-existent location",
+      "",
+    ].join("\n");
+    const list = parseWorktreeList(out);
+    expect(list.map((w) => [w.path, w.branch, w.detached, w.locked, w.prunable])).toEqual([
+      ["/w/web", "main", false, false, false],
+      ["/w/web/.claude/worktrees/CP-7-fix", "feat/CP-7-fix", false, true, false],
+      ["/gone", null, true, false, true],
+    ]);
+  });
+
+  test("matches a ticket key as a whole token", () => {
+    expect(namesTicket("CP-7-fix-login", "CP-7")).toBe(true);
+    expect(namesTicket("feat/cp-7", "CP-7")).toBe(true);
+    expect(namesTicket("CP-70-other", "CP-7")).toBe(false);
+    expect(namesTicket("XCP-7", "CP-7")).toBe(false);
+  });
+
+  test("links PRs to the deepest worktree and tickets by PR, name, then cwd", () => {
+    const wts = [
+      { path: "/w/web", branch: "main" },
+      { path: "/w/web/.claude/worktrees/a", branch: "CP-7-fix" },
+      { path: "/w/web/.claude/worktrees/b", branch: "other" },
+    ];
+    const links = linkWorktrees(
+      wts,
+      [
+        { id: "pr-main", cwd: "/w/web" },
+        { id: "pr-b", cwd: "/w/web/.claude/worktrees/b/sub" },
+        { id: "pr-elsewhere", cwd: "/x" },
+      ],
+      [
+        { key: "CP-7", cwd: "/w", pr_id: null },
+        { key: "CP-8", cwd: "/w", pr_id: "pr-b" },
+        { key: "CP-9", cwd: "/w/web", pr_id: null },
+        { key: "CP-10", cwd: "/w", pr_id: null },
+      ],
+    );
+    expect(links.get("/w/web")).toEqual({ prs: ["pr-main"], tickets: ["CP-9"] });
+    expect(links.get("/w/web/.claude/worktrees/a")).toEqual({ prs: [], tickets: ["CP-7"] });
+    expect(links.get("/w/web/.claude/worktrees/b")).toEqual({ prs: ["pr-b"], tickets: ["CP-8"] });
+  });
+
+  test("lists main checkouts under the roots, not linked worktrees", async () => {
+    const root = mkdtempSync(join(tmpdir(), "roots-"));
+    mkdirSync(join(root, "web", ".git"), { recursive: true });
+    mkdirSync(join(root, "web-wt"), { recursive: true });
+    writeFileSync(join(root, "web-wt", ".git"), "gitdir: ../web/.git/worktrees/web-wt\n");
+    const web = join(root, "web");
+    const repos = await listRepos(
+      fakeGit({ [web]: "git@github.com:acme/web.git" }, { [web]: `worktree ${web}\nbranch refs/heads/main\n\nworktree ${join(root, "web-wt")}\nbranch refs/heads/x\n` }),
+      [root],
+    );
+    expect(repos.map((r) => [r.path, r.remote, r.worktrees.map((w) => w.branch)])).toEqual([[web, "github.com/acme/web", ["main", "x"]]]);
+  });
+
+  test("shortens paths under home", () => {
+    expect(tilde("/home/me/work/web", "/home/me")).toBe("~/work/web");
+    expect(tilde("/homeless", "/home")).toBe("/homeless");
+  });
+});
+
+describe("repo filter", () => {
+  const wt = (path: string, branch: string, extra: { prs?: string[]; tickets?: string[] } = {}) => ({
+    path, branch, head: "abc", main: false, locked: false, prunable: false, prs: extra.prs ?? [], tickets: extra.tickets ?? [],
+  });
+  const repos = [
+    { path: "/w/web", root: "/w", remote: "github.com/acme/web", worktrees: [wt("/w/web", "main"), wt("/w/wt/a", "CP-7-fix", { prs: ["p1"] })] },
+    { path: "/w/api", root: "/w", remote: "github.com/acme/api", worktrees: [wt("/w/api", "main", { tickets: ["CP-9"] })] },
+    { path: "/w/broken", root: "/w", remote: null, worktrees: [], error: "boom" },
+  ];
+  const links = { pr: (id: string) => (id === "p1" ? "#12 - Fix login redirect no_changes" : id), ticket: (k: string) => `${k} Rate limits` };
+  const show = (q: string) => filterRepos(repos, q, links).map((r) => [r.path, r.worktrees.map((w) => w.branch)]);
+
+  test("matches repo, branch, PR and ticket text, keeping only matching worktrees", () => {
+    expect(show("")).toHaveLength(3);
+    expect(show("web")).toEqual([["/w/web", ["main", "CP-7-fix"]]]);
+    expect(show("cp-7")).toEqual([["/w/web", ["CP-7-fix"]]]);
+    expect(show("login")).toEqual([["/w/web", ["CP-7-fix"]]]);
+    expect(show("rate limits")).toEqual([["/w/api", ["main"]]]);
+    expect(show("main api")).toEqual([["/w/api", ["main"]]]);
+    expect(show("broken")).toEqual([["/w/broken", []]]);
+    expect(show("nothing")).toEqual([]);
   });
 });

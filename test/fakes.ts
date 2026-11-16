@@ -117,10 +117,17 @@ export class FakeMux implements Multiplexer {
   }
 }
 
-/** git stand-in: every repo has the origin in `origins` (keyed by directory), anything else fails. */
-export function fakeGit(origins: Record<string, string> = {}): Exec {
+/**
+ * git stand-in: every repo has the origin in `origins` (keyed by directory), anything else fails.
+ * `worktrees` holds `git worktree list --porcelain` output by directory; a repo without one has only its main worktree.
+ */
+export function fakeGit(origins: Record<string, string> = {}, worktrees: Record<string, string> = {}): Exec {
   return async (cmd) => {
     const dir = cmd[2]!;
+    if (cmd.includes("worktree")) {
+      const out = worktrees[dir] ?? (dir in origins ? `worktree ${dir}\nHEAD 0123456789abcdef\nbranch refs/heads/main\n\n` : undefined);
+      return out ? { code: 0, stdout: out, stderr: "" } : { code: 128, stdout: "", stderr: "not a git repository" };
+    }
     if (cmd.includes("rev-parse")) return { code: dir in origins ? 0 : 128, stdout: "true\n", stderr: "" };
     const o = origins[dir];
     return o ? { code: 0, stdout: `${o}\n`, stderr: "" } : { code: 2, stdout: "", stderr: "no origin" };

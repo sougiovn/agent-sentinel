@@ -221,7 +221,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - The daemon is independent of the dashboard: quitting the TUI leaves it running.
 - `sentinel daemon` runs it in the foreground and logs to stderr as well as `sentinel.log`. Startup failures are written to the log too.
 - **Single instance:** a second daemon refuses to start while one is answering on the socket. A leftover socket file from a crashed daemon is removed on start.
-- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
+- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`, `myPrs`, `newWatchDefaults`, `suggestCwd`, `validateCwd`, `repos`. `repos` returns the [repos view](#repos-view): the configured roots and each repo's worktrees with the PR ids and ticket keys tied to them. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
 - **Stopping:** `sentinel stop` asks the daemon to exit; if it doesn't answer, Sentinel sends `SIGTERM` to the PID in `sentinel.pid`. `SIGINT` and `SIGTERM` shut it down cleanly, removing the socket and pidfile. It waits up to 5 seconds for the daemon to stop answering.
 - **Restarting:** `sentinel restart` stops the daemon the same way, then starts a new one in the background (or just starts one if none was running). Use it after upgrading Sentinel, since a daemon started from the old build keeps running until it's stopped.
 - Prompt files older than 7 days are deleted after each poll.
@@ -266,6 +266,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `/` | Filter watched PRs: every word must appear in the PR's `org/repo` or title. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `Enter` | Event history for the PR |
 | `n` / `w` | Watch one of your PRs with a new Claude session (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)) |
+| `g` | Repos and worktrees (see [Repos view](#repos-view)) |
 | `o` | Open the selected PR in the browser (`open`, or `xdg-open` on Linux) |
 | `c` | Check the selected PR now |
 | `r` | Refresh all watched PRs now and restart the poll countdown (single-flight, 30s cooldown) |
@@ -280,6 +281,26 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - **Daemon offline:** while the daemon is starting, the TUI shows "Starting Sentinel daemon…". If it fails to start or stops later, the TUI shows the error and offers `S` to try again.
 - **Config errors:** an invalid config file, or a daemon running on its last good config, is shown in a red banner.
 - **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`.
+
+### Repos view
+
+`g` lists every git repo under `newWatch.repoRoots` with all of its worktrees, and shows which watched PRs and Jira tickets belong to each worktree.
+
+- **Repos:** main checkouts found two levels deep under each root, sorted by path. A directory that is itself a linked worktree (its `.git` is a file) isn't listed as a repo; it appears under its repo instead. Worktrees are listed even when they live outside the roots (for example `~/.codex/worktrees/…` or `~/.gitbutler-worktrees/…`). The heading shows `owner/repo` from `origin` (with the host for GitHub Enterprise), or the directory name when there is no `origin`.
+- **Worktrees:** from `git worktree list --porcelain`, main checkout first. Each line shows the branch (or `detached <sha>`), the path, and tags for the main checkout, a locked worktree, and one whose directory is gone (`missing (prunable)`). If git can't list a repo's worktrees, its error is shown under the heading.
+- **PRs:** a watched PR is listed under the worktree that contains its directory. When worktrees are nested (a `.claude/worktrees/…` inside the main checkout), the deepest one wins.
+- **Jira tickets:** a ticket is listed under the worktree of the PR its session handed off, and under every worktree whose branch or directory name contains the ticket key as a whole token (`CP-123-fix`, `feat/CP-123` and `giovane/cp-123/x` match `CP-123`; `CP-1234` doesn't). If neither applies, it goes under the worktree containing its session's directory. Dismissed tickets aren't shown.
+- **Status:** PR and ticket lines show their current status and session, and update with the 2-second refresh. The worktree scan itself runs only when the view opens and on `r`, because it runs git once per repo.
+- **Summary line:** repo and worktree counts, how many worktrees have a watched PR or ticket, and how many are shown while a filter is on.
+- The list scrolls inside its box and keeps the selected worktree, its PRs and tickets, and (for a repo's first worktree) the repo heading in view.
+
+| Key | Action |
+| --- | --- |
+| `↑`/`↓` or `k`/`j` | Select a worktree |
+| `/` | Filter: every word must appear in the repo name or path, the branch, the worktree path, or a linked PR (`#number`, title, status) or ticket (key, summary, status). Only matching worktrees are shown, and repos with none are hidden. `Enter` keeps the filter and returns to the list, `Esc` clears it |
+| `o` | Open the selected worktree's first PR in the browser, or its first ticket when it has no PR |
+| `r` | Rescan the repo roots; the selection stays on the same worktree |
+| `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
 **Settings** open in a dialog over the PR list. Every config field is listed with its current value, one line each (long values are cut short), and the list scrolls to keep the selection visible.
 
@@ -320,7 +341,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `fixPromptTemplate` | built-in | Placeholders `{{prUrl}}`, `{{reason}}`, `{{items}}` |
 | `introPromptTemplate` | built-in | First prompt for a TUI-started session with nothing to fix. Placeholders `{{prUrl}}`, `{{title}}`, `{{repo}}`, `{{number}}`, `{{cwd}}` |
 | `newWatch.onlyMine` | `true` | PR picker lists only PRs you authored; `false` = any open PR involving you |
-| `newWatch.repoRoots` | `["~/work"]` | Scanned two levels deep for local clones |
+| `newWatch.repoRoots` | `["~/work"]` | Scanned two levels deep for local clones, and listed in the [repos view](#repos-view) |
 | `newWatch.model` / `.models` | `"default"` / `default, opus, sonnet, haiku` | Default and choices for the form; `default` omits `--model` |
 | `newWatch.effort` / `.efforts` | `"default"` / `default, low, medium, high, xhigh, max` | Default and choices for the form; `default` omits `--effort` |
 | `newWatch.startNow` | `true` | Form default for "Start session" |
@@ -404,7 +425,9 @@ The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sen
 
 ## Verification status and known limits
 
-Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, theme parsing (defaults, partial files, status merge, invalid colours and unknown keys), database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, a custom theme and its live reload (including an invalid edit keeping the last good theme), and starting the daemon.
+Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, theme parsing (defaults, partial files, status merge, invalid colours and unknown keys), database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, the repos view data (parsing `git worktree list --porcelain`, listing main checkouts but not linked worktrees, tying PRs to the deepest worktree and tickets by handed-off PR, key in the branch or directory name, then session directory, a repo whose worktrees can't be listed, roots that don't exist), new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, a custom theme and its live reload (including an invalid edit keeping the last good theme), and starting the daemon.
+
+TUI tests also cover the repos view: worktrees with their PR and ticket, opening them, the `/` filter, scrolling in a short terminal with the footer kept visible, `r` rescanning with the selection kept on the same worktree, the empty-roots message, and refusing to open while the daemon is offline.
 
 Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 
@@ -421,6 +444,7 @@ Not verified yet:
 
 Known limits:
 - **Jira:** the Jira timer only runs in a started daemon, so its scheduling (first poll after 5s, rescheduling when `jira.enabled` or the interval changes) isn't covered by tests. Tickets have no event history (`enter` does nothing on a ticket); look at `sentinel.log`. A ticket that leaves the query while it is still `queued` isn't started until it matches again. Deleting a ticket's row (with the daemon stopped) is the only way to have Sentinel pick it up a second time.
+- **Repos view:** a watched PR is tied to a worktree by its session's directory, not by its branch, so a PR whose session works in the main checkout shows there even when its branch is checked out in another worktree. Worktree changes made while the view is open appear after `r`.
 - The watched-PR table doesn't scroll; with more PRs than fit, the bottom ones are hidden (use `/` to filter).
 - If a session's busy timeout expires after its agent exited without an `exit` signal (always the case for Codex, which has no `exit` hook), the pointer line is typed into a bare shell instead of the agent.
 - Agent args that contain commas can't be edited in the TUI; edit `config.json` instead.

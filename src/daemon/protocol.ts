@@ -64,6 +64,37 @@ export interface CwdCheck {
   warning?: string;
 }
 
+export interface WorktreeEntry {
+  path: string;
+  /** Short branch name; null when detached. */
+  branch: string | null;
+  head: string | null;
+  /** The repo's main checkout. */
+  main: boolean;
+  locked: boolean;
+  /** Its directory is gone; `git worktree prune` would remove it. */
+  prunable: boolean;
+  /** Watched PR ids whose session works here. */
+  prs: string[];
+  /** Jira ticket keys tied to this worktree. */
+  tickets: string[];
+}
+
+export interface RepoEntry {
+  path: string;
+  root: string;
+  /** `host/owner/repo` from `origin`, or null. */
+  remote: string | null;
+  worktrees: WorktreeEntry[];
+  error?: string;
+}
+
+/** Local repos under the configured repo roots, with their worktrees. */
+export interface RepoView {
+  roots: string[];
+  repos: RepoEntry[];
+}
+
 /** Result of a manual, full poll triggered from the TUI. */
 export interface RefreshResult {
   /** False when a poll was already running or the manual-refresh cooldown is active. */
@@ -89,6 +120,7 @@ export interface RpcMethods {
   newWatchDefaults: [Record<string, never>, NewWatchDefaults];
   suggestCwd: [{ pr: string }, { path: string | null }];
   validateCwd: [{ pr: string; path: string }, CwdCheck];
+  repos: [Record<string, never>, RepoView];
   unwatch: [{ pr: string }, { removed: boolean }];
   check: [{ pr?: string }, { checked: string[] }];
   refresh: [Record<string, never>, RefreshResult];

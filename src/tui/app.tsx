@@ -1,22 +1,24 @@
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, saveConfig, type Config } from "../core/config.ts";
 import type { Paths } from "../core/paths.ts";
 import type { EventRow } from "../core/types.ts";
-import type { MyPr, NewWatchDefaults, PrListEntry, RpcMethod, RpcMethods, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
+import type { MyPr, NewWatchDefaults, PrListEntry, RepoEntry, RepoView, RpcMethod, RpcMethods, StatusInfo, TicketListEntry, WorktreeEntry } from "../daemon/protocol.ts";
 import { Client } from "../cli/client.ts";
 import { startDaemon as startDaemonProcess } from "../cli/daemon-control.ts";
 import { openUrl as defaultOpenUrl } from "../cli/open-url.ts";
 import { ago, prGroup, prLine, sortByGroup } from "../cli/format.ts";
 import { cycleField, displayField, FORM_FIELDS, initialForm, watchRequest, type NewWatchForm } from "./new-watch.ts";
 import { filterPrs, filterWatched } from "./pr-filter.ts";
+import type { ScrollBoxRenderable } from "@opentui/core";
+import { filterRepos, repoLabel, tilde, worktreeLabel } from "./repo-labels.ts";
 import { cycleEnum, displayValue, editText, FIELDS, filterFields, parseValue } from "./settings.ts";
 import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type Theme } from "./theme.ts";
 
-type View = "list" | "history" | "settings" | "pick-pr" | "new-watch";
+type View = "list" | "history" | "settings" | "pick-pr" | "new-watch" | "repos";
 
 /** The daemon RPC surface the TUI uses; tests pass one backed by an in-process daemon. */
 export interface RpcClient {
@@ -101,6 +103,39 @@ export function App(props: AppProps) {
   let warnedPath: string | null = null;
   let formDraft = "";
   const filtered = () => filterPrs(myPrs() ?? [], query());
+
+  // repos view
+  const [repoView, setRepoView] = createSignal<RepoView | null>(null);
+  const [repoError, setRepoError] = createSignal<string | null>(null);
+  const [repoLoading, setRepoLoading] = createSignal(false);
+  /** Index into `allWorktrees()`, i.e. the n-th worktree shown. */
+  const [repoSel, setRepoSel] = createSignal(0);
+  const [repoQuery, setRepoQuery] = createSignal("");
+  /** The repos filter input has focus. */
+  const [repoFiltering, setRepoFiltering] = createSignal(false);
+  /** Repos and worktrees after the `/` filter. */
+  const shownRepos = () =>
+    filterRepos(repoView()?.repos ?? [], repoQuery(), {
+      pr: (id) => {
+        const pr = prById(id);
+        return pr ? `${prLine(pr)} ${pr.last_status}` : id;
+      },
+      ticket: (key) => {
+        const t = ticketByKey(key);
+        return t ? `${key} ${t.summary ?? ""} ${t.last_status}` : key;
+      },
+    });
+  const allWorktrees = () => shownRepos().flatMap((r) => r.worktrees);
+  const worktreeIndex = () => new Map(allWorktrees().map((w, i) => [w, i]));
+  const selectedWorktree = () => allWorktrees()[repoSel()];
+  let repoScroll: ScrollBoxRenderable | undefined;
+  createEffect(() => {
+    const i = repoSel();
+    shownRepos();
+    if (view() === "repos" && repoView()) repoScroll?.scrollChildIntoView(`repo-wt-${i}`, { align: "nearest" });
+  });
+  const prById = (id: string) => prs().find((p) => p.id === id);
+  const ticketByKey = (key: string) => tickets().find((t) => t.key === key);
 
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   const notify = (text: string, error = false) => {
@@ -285,6 +320,33 @@ export function App(props: AppProps) {
           : msg,
       );
     }
+  };
+
+  const loadRepos = async () => {
+    setRepoLoading(true);
+    try {
+      const keep = selectedWorktree()?.path;
+      setRepoView(await client.call("repos", {}, 60_000));
+      setRepoError(null);
+      const i = allWorktrees().findIndex((w) => w.path === keep);
+      setRepoSel(Math.max(0, Math.min(i >= 0 ? i : repoSel(), allWorktrees().length - 1)));
+    } catch (e) {
+      const msg = (e as Error).message;
+      setRepoError(msg.startsWith("Unknown method") ? "the running daemon is older than this dashboard. Run `sentinel restart`." : msg);
+    } finally {
+      setRepoLoading(false);
+    }
+  };
+
+  const openRepos = async () => {
+    if (!online()) {
+      notify("Start the daemon first (S)", true);
+      return;
+    }
+    setRepoQuery("");
+    setRepoFiltering(false);
+    setView("repos");
+    await loadRepos();
   };
 
   const pickPr = (pr: MyPr) => {
@@ -539,6 +601,9 @@ export function App(props: AppProps) {
         case "w":
           await openPicker();
           return;
+        case "g":
+          await openRepos();
+          return;
         case "o": {
           const pr = current();
           if (!pr) return;
@@ -569,6 +634,63 @@ export function App(props: AppProps) {
           await client.call("pause", { sessionId: pr.session_id, paused }).catch((e: Error) => notify(e.message, true));
           notify(`${paused ? "Paused" : "Resumed"} session ${pr.session_id.slice(0, 8)}`);
           await refresh();
+          return;
+        }
+      }
+      return;
+    }
+    if (v === "repos") {
+      if (repoFiltering()) {
+        const last = allWorktrees().length - 1;
+        if (key.name === "escape") {
+          setRepoQuery("");
+          setRepoFiltering(false);
+          setRepoSel(0);
+        } else if (key.name === "return") setRepoFiltering(false);
+        else if (key.name === "up") setRepoSel((i) => Math.max(0, i - 1));
+        else if (key.name === "down") setRepoSel((i) => Math.min(last, i + 1));
+        return; // everything else goes to the filter input
+      }
+      if (key.name === "/" || key.sequence === "/") {
+        await nextTick();
+        setRepoFiltering(true);
+        return;
+      }
+      if (key.name === "escape" && repoQuery()) {
+        setRepoQuery("");
+        setRepoSel(0);
+        return;
+      }
+      switch (key.name) {
+        case "escape":
+        case "q":
+        case "backspace":
+          setView("list");
+          return;
+        case "up":
+        case "k":
+          setRepoSel((i) => Math.max(0, i - 1));
+          return;
+        case "down":
+        case "j":
+          setRepoSel((i) => Math.min(allWorktrees().length - 1, i + 1));
+          return;
+        case "r":
+          await loadRepos();
+          return;
+        case "o": {
+          const wt = selectedWorktree();
+          const url = wt && (prById(wt.prs[0] ?? "")?.url ?? ticketByKey(wt.tickets[0] ?? "")?.url);
+          if (!url) {
+            notify("No watched PR or Jira ticket on this worktree", true);
+            return;
+          }
+          try {
+            (props.openUrl ?? defaultOpenUrl)(url);
+            notify(`Opened ${url}`);
+          } catch (e) {
+            notify(`Could not open ${url}: ${(e as Error).message}`, true);
+          }
           return;
         }
       }
@@ -675,6 +797,80 @@ export function App(props: AppProps) {
     return all.slice(start, start + rows);
   };
 
+  /** Rows of the repos view that fit inside its box (title border, summary line, bottom border). */
+  const repoWidths = () => {
+    const w = dims().width - 6;
+    const branch = Math.min(40, Math.max(16, Math.floor(w * 0.3)));
+    const item = Math.max(24, w - 6 - 14 - 10);
+    return { branch, item };
+  };
+  const repoSummary = () => {
+    const v = repoView();
+    if (!v) return repoLoading() ? "Scanning repo roots…" : "";
+    const wts = v.repos.flatMap((r) => r.worktrees);
+    const linked = wts.filter((w) => w.prs.length || w.tickets.length).length;
+    const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
+    const shown = repoQuery() ? ` · ${allWorktrees().length} shown` : "";
+    return `${n(v.repos.length, "repo")} · ${n(wts.length, "worktree")} · ${linked} with a watched PR or ticket${shown}${repoLoading() ? " · rescanning…" : ""}`;
+  };
+
+  const repoHeading = (repo: RepoEntry) => (
+    <>
+      <box flexDirection="row" flexShrink={0}>
+        <text fg={theme().info} flexShrink={0}>
+          <b>{repoLabel(repo)}</b>
+        </text>
+        <text fg={theme().textMuted}> {tilde(repo.path)}</text>
+      </box>
+      <Show when={repo.error}>
+        <text fg={theme().error}>  {repo.error}</text>
+      </Show>
+    </>
+  );
+
+  /** A worktree and the PRs and tickets tied to it; the repo heading rides with its first worktree so both scroll into view together. */
+  const worktreeGroup = (repo: RepoEntry, wt: WorktreeEntry, firstOfRepo: boolean) => {
+    const n = () => worktreeIndex().get(wt) ?? -1;
+    return (
+      <box id={`repo-wt-${n()}`} flexDirection="column" flexShrink={0}>
+        <Show when={firstOfRepo}>{repoHeading(repo)}</Show>
+        <box flexDirection="row" flexShrink={0} backgroundColor={n() === repoSel() ? theme().selectionBackground : undefined}>
+          <text flexShrink={0}>{pad(`  ${worktreeLabel(wt)}`, repoWidths().branch)} </text>
+          <text fg={theme().textMuted}>
+            {tilde(wt.path)}
+            {wt.main ? " · main checkout" : ""}
+            {wt.locked ? " · locked" : ""}
+          </text>
+          <text fg={theme().warning} flexShrink={0}>{wt.prunable ? " · missing (prunable)" : ""}</text>
+        </box>
+        <For each={wt.prs}>
+          {(id) => {
+            const pr = () => prById(id);
+            return (
+              <box flexDirection="row" flexShrink={0}>
+                <text fg={theme().textSecondary} flexShrink={0}>{pad(`      PR ${prLine(pr() ?? { id })}`, repoWidths().item)} </text>
+                <text fg={statusColor(theme(), pr()?.last_status ?? "")} flexShrink={0}>{pad(pr()?.last_status ?? "", 14)}</text>
+                <text fg={theme().textMuted}>{(pr()?.session_id ?? "").slice(0, 8)}</text>
+              </box>
+            );
+          }}
+        </For>
+        <For each={wt.tickets}>
+          {(key) => {
+            const t = () => ticketByKey(key);
+            return (
+              <box flexDirection="row" flexShrink={0}>
+                <text fg={theme().textSecondary} flexShrink={0}>{pad(`      ${key} - ${t()?.summary ?? ""}`, repoWidths().item)} </text>
+                <text fg={statusColor(theme(), t()?.last_status ?? "")} flexShrink={0}>{pad(t()?.last_status ?? "", 14)}</text>
+                <text fg={theme().textMuted}>{(t()?.session_id ?? "").slice(0, 8)}</text>
+              </box>
+            );
+          }}
+        </For>
+      </box>
+    );
+  };
+
   const pickWidths = () => {
     const w = modalWidth() - 4;
     const repo = Math.min(36, Math.max(16, Math.floor(w * 0.3)));
@@ -703,6 +899,10 @@ export function App(props: AppProps) {
     switch (view()) {
       case "history":
         return "esc back";
+      case "repos":
+        if (repoFiltering()) return "type to filter by repo, branch, path, PR or ticket · ↑↓ move · enter done · esc clear";
+        if (repoQuery()) return "↑↓ move · o open PR or ticket · / change filter · esc clear filter · r rescan";
+        return "↑↓ move · / filter · o open PR or ticket · r rescan · esc back";
       case "settings":
         if (settingsFiltering()) return "type to filter settings · ↑↓ move · enter done · esc clear";
         return settingsQuery()
@@ -718,7 +918,7 @@ export function App(props: AppProps) {
         if (listQuery())
           return "↑↓ move · enter history · o open · / change filter · esc clear filter · c check · r refresh · d unwatch · p pause";
         return online()
-          ? `↑↓ move · / filter · enter history · o open · n watch a PR · c check now · r refresh all · d unwatch · p pause/resume${showTickets() ? " · t tickets" : ""} · s settings · R reload · q quit`
+          ? `↑↓ move · / filter · enter history · o open · n watch a PR · g repos · c check now · r refresh all · d unwatch · p pause/resume${showTickets() ? " · t tickets" : ""} · s settings · R reload · q quit`
           : "S start daemon · R reload config · q quit";
     }
   };
@@ -867,6 +1067,61 @@ export function App(props: AppProps) {
               </text>
             </box>
           </Show>
+        </Match>
+
+        <Match when={view() === "repos"}>
+          <box
+            flexDirection="column"
+            border
+            title={` Repos · ${(repoView()?.roots ?? config()?.newWatch.repoRoots ?? []).join(", ")} `}
+            marginTop={1}
+            flexGrow={1}
+            paddingLeft={1}
+            paddingRight={1}
+          >
+            <Show when={repoError()}>
+              <text fg={theme().error}>Could not list repos: {repoError()}</text>
+            </Show>
+            <text fg={theme().textMuted} flexShrink={0}>
+              {repoSummary()}
+            </text>
+            <Show when={repoFiltering() || repoQuery() !== ""}>
+              <box flexDirection="row" height={1} flexShrink={0}>
+                <text fg={theme().accent}>/ </text>
+                <Show when={repoFiltering()} fallback={<text>{repoQuery()}</text>}>
+                  <input
+                    value={repoQuery()}
+                    focused
+                    flexGrow={1}
+                    placeholder="filter by repo, branch, path, PR or ticket"
+                    onInput={(v) => {
+                      setRepoQuery(v);
+                      setRepoSel(0);
+                    }}
+                  />
+                </Show>
+              </box>
+            </Show>
+            <Show when={repoQuery() !== "" && (repoView()?.repos.length ?? 0) > 0 && shownRepos().length === 0}>
+              <text fg={theme().textMuted}>No repos or worktrees match "{repoQuery()}".</text>
+            </Show>
+            <Show when={repoView() && repoView()!.repos.length === 0}>
+              <text fg={theme().textMuted}>
+                No git repositories found two levels under {repoView()!.roots.join(", ")}. Change "New watch: repo roots" in settings (s).
+              </text>
+            </Show>
+            <scrollbox ref={(el: ScrollBoxRenderable) => (repoScroll = el)} flexGrow={1} flexShrink={1} minHeight={0}>
+              <For each={shownRepos()}>
+                {(repo, i) => (
+                  <box flexDirection="column" flexShrink={0} marginTop={i() === 0 ? 0 : 1}>
+                    <Show when={repo.worktrees.length > 0} fallback={repoHeading(repo)}>
+                      <For each={repo.worktrees}>{(wt, j) => worktreeGroup(repo, wt, j() === 0)}</For>
+                    </Show>
+                  </box>
+                )}
+              </For>
+            </scrollbox>
+          </box>
         </Match>
 
         <Match when={view() === "history"}>
