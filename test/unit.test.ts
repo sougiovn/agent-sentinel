@@ -24,6 +24,7 @@ import { GhCli } from "../src/github/gh.ts";
 import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
 import { linkWorktrees, listRepos, namesTicket, parseWorktreeList } from "../src/core/worktrees.ts";
 import { filterRepos, tilde } from "../src/tui/repo-labels.ts";
+import { filterHints, fitHints } from "../src/tui/shortcuts.ts";
 import type { MyPr } from "../src/daemon/protocol.ts";
 import { filterPrs, filterWatched } from "../src/tui/pr-filter.ts";
 
@@ -706,5 +707,28 @@ describe("repo filter", () => {
     expect(show("main api")).toEqual([["/w/api", ["main"]]]);
     expect(show("broken")).toEqual([["/w/broken", []]]);
     expect(show("nothing")).toEqual([]);
+  });
+});
+
+describe("footer hints", () => {
+  const hints = [
+    { key: "↑↓", label: "move" },
+    { key: "/", label: "filter" },
+    { key: "q", label: "quit" },
+  ];
+  test("keeps whole hints that fit and marks the rest with …", () => {
+    expect(fitHints(hints, 100)).toBe("↑↓ move · / filter · q quit");
+    expect(fitHints(hints, "↑↓ move · / filter · q quit".length)).toBe("↑↓ move · / filter · q quit");
+    expect(fitHints(hints, 24)).toBe("↑↓ move · / filter · …");
+    expect(fitHints(hints, 12)).toBe("↑↓ move · …");
+    expect(fitHints(hints, 5)).toBe("…");
+    expect(fitHints(hints, 0)).toBe("");
+  });
+
+  test("filters by key or label, every word must match", () => {
+    expect(filterHints(hints, "").map((h) => h.key)).toEqual(["↑↓", "/", "q"]);
+    expect(filterHints(hints, "QUIT").map((h) => h.key)).toEqual(["q"]);
+    expect(filterHints(hints, "/").map((h) => h.key)).toEqual(["/"]);
+    expect(filterHints(hints, "move quit")).toEqual([]);
   });
 });

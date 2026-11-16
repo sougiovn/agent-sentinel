@@ -15,6 +15,7 @@ import { cycleField, displayField, FORM_FIELDS, initialForm, watchRequest, type 
 import { filterPrs, filterWatched } from "./pr-filter.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { filterRepos, repoLabel, tilde, worktreeLabel } from "./repo-labels.ts";
+import { filterHints, fitHints, HELP_HINT, hintText, type Hint } from "./shortcuts.ts";
 import { cycleEnum, displayValue, editText, FIELDS, filterFields, parseValue } from "./settings.ts";
 import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type Theme } from "./theme.ts";
 
@@ -136,6 +137,16 @@ export function App(props: AppProps) {
   });
   const prById = (id: string) => prs().find((p) => p.id === id);
   const ticketByKey = (key: string) => tickets().find((t) => t.key === key);
+
+  /** The `?` shortcuts dialog is open. */
+  const [helpOpen, setHelpOpen] = createSignal(false);
+  /**
+   * The dialog's `/` filter. Typed by the key handler rather than an `<input>`, so a filter input
+   * focused under the dialog keeps its focus.
+   */
+  const [helpQuery, setHelpQuery] = createSignal("");
+  const [helpFiltering, setHelpFiltering] = createSignal(false);
+  let helpScroll: ScrollBoxRenderable | undefined;
 
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   const notify = (text: string, error = false) => {
@@ -415,6 +426,37 @@ export function App(props: AppProps) {
   useKeyboard(async (key) => {
     if (key.ctrl && key.name === "c") {
       renderer.destroy();
+      return;
+    }
+    // Handled before any focused input sees the key, so `?` works while typing a filter too.
+    if (key.sequence === "?" && !key.ctrl && !key.meta) {
+      key.preventDefault();
+      setConfirmDelete(false);
+      setConfirmDismiss(false);
+      setHelpQuery("");
+      setHelpFiltering(false);
+      setHelpOpen((o) => !o);
+      return;
+    }
+    if (helpOpen()) {
+      key.preventDefault();
+      if (helpFiltering()) {
+        if (key.name === "escape") {
+          setHelpQuery("");
+          setHelpFiltering(false);
+        } else if (key.name === "return") setHelpFiltering(false);
+        else if (key.name === "backspace") setHelpQuery((q) => q.slice(0, -1));
+        else if (key.name === "up") helpScroll?.scrollBy(-1);
+        else if (key.name === "down") helpScroll?.scrollBy(1);
+        else if (key.sequence && key.sequence.length === 1 && key.sequence >= " " && !key.ctrl && !key.meta)
+          setHelpQuery((q) => q + key.sequence);
+        return;
+      }
+      if (key.name === "/" || key.sequence === "/") setHelpFiltering(true);
+      else if (key.name === "escape" && helpQuery()) setHelpQuery("");
+      else if (key.name === "escape" || key.name === "q" || key.name === "return") setHelpOpen(false);
+      else if (key.name === "up" || key.name === "k") helpScroll?.scrollBy(-1);
+      else if (key.name === "down" || key.name === "j") helpScroll?.scrollBy(1);
       return;
     }
     if (editing() !== null || formEditing() !== null) {
@@ -892,36 +934,126 @@ export function App(props: AppProps) {
     return all.slice(start, start + rows);
   };
 
-  const footer = () => {
-    if (editing() !== null || formEditing() !== null) return "enter save · esc cancel";
-    if (confirmDelete()) return `Unwatch ${current()?.id}? y to confirm, any key to cancel`;
-    if (confirmDismiss()) return `Dismiss ${currentTicket()?.key}? It won't be picked up again. y to confirm, any key to cancel`;
+  const hint = (key: string, label: string): Hint => ({ key, label });
+
+  /**
+   * The shortcuts for what is on screen now, most used first: the footer shows as many as fit and the
+   * `?` dialog lists them all. `prompt` replaces the footer hints while a confirmation is pending.
+   */
+  const shortcuts = (): { title: string; hints: Hint[]; prompt?: string } => {
+    if (editing() !== null || formEditing() !== null)
+      return { title: "Editing a value", hints: [hint("enter", "save"), hint("esc", "cancel")] };
+    if (confirmDelete())
+      return { title: "Unwatch", prompt: `Unwatch ${current()?.id}? y to confirm, any key to cancel`, hints: [hint("y", "unwatch"), hint("any key", "cancel")] };
+    if (confirmDismiss())
+      return {
+        title: "Dismiss ticket",
+        prompt: `Dismiss ${currentTicket()?.key}? It won't be picked up again. y to confirm, any key to cancel`,
+        hints: [hint("y", "dismiss"), hint("any key", "cancel")],
+      };
     switch (view()) {
       case "history":
-        return "esc back";
-      case "repos":
-        if (repoFiltering()) return "type to filter by repo, branch, path, PR or ticket · ↑↓ move · enter done · esc clear";
-        if (repoQuery()) return "↑↓ move · o open PR or ticket · / change filter · esc clear filter · r rescan";
-        return "↑↓ move · / filter · o open PR or ticket · r rescan · esc back";
+        return { title: "History", hints: [hint("esc", "back")] };
+      case "repos": {
+        if (repoFiltering())
+          return {
+            title: "Repos · filter",
+            hints: [hint("type", "to filter by repo, branch, path, PR or ticket"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")],
+          };
+        const filter = repoQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")];
+        return {
+          title: "Repos",
+          hints: [hint("↑↓", "move"), ...filter, hint("o", "open PR or ticket"), hint("r", "rescan"), hint(repoQuery() ? "q" : "esc", "back")],
+        };
+      }
       case "settings":
-        if (settingsFiltering()) return "type to filter settings · ↑↓ move · enter done · esc clear";
-        return settingsQuery()
-          ? "↑↓ move · enter edit/cycle · / change filter · esc clear filter"
-          : "↑↓ move · enter edit/cycle · / filter · e edit template · r reload · esc back";
+        if (settingsFiltering())
+          return { title: "Settings · filter", hints: [hint("type", "to filter settings"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
+        return {
+          title: "Settings",
+          hints: [
+            hint("↑↓", "move"),
+            hint("enter", "edit/cycle"),
+            ...(settingsQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")]),
+            hint("e", "edit template"),
+            hint("r", "reload"),
+            hint(settingsQuery() ? "q" : "esc", "back"),
+          ],
+        };
       case "pick-pr":
-        return "type to filter (org, repo, #number, title) · ↑↓ move · enter pick · esc back";
+        return {
+          title: "Watch a PR",
+          hints: [hint("type", "to filter (org, repo, #number, title)"), hint("↑↓", "move"), hint("enter", "pick"), hint("esc", "back")],
+        };
       case "new-watch":
-        return "↑↓ move · ←→/space change · e type a model or path · enter on [ Watch ] to start · esc back";
+        return {
+          title: "New watch",
+          hints: [
+            hint("↑↓", "move"),
+            hint("←→/space", "change"),
+            hint("e", "type a model or path"),
+            hint("enter", "on [ Watch ] to start"),
+            hint("esc", "back"),
+          ],
+        };
       default:
-        if (listFiltering()) return "type to filter by repo or title · ↑↓ move · enter done · esc clear";
-        if (ticketFocus()) return "↑↓ move · o open ticket · d dismiss · p pause/resume · t/esc back to PRs · r refresh all · q quit";
-        if (listQuery())
-          return "↑↓ move · enter history · o open · / change filter · esc clear filter · c check · r refresh · d unwatch · p pause";
-        return online()
-          ? `↑↓ move · / filter · enter history · o open · n watch a PR · g repos · c check now · r refresh all · d unwatch · p pause/resume${showTickets() ? " · t tickets" : ""} · s settings · R reload · q quit`
-          : "S start daemon · R reload config · q quit";
+        if (!online())
+          return { title: "Watched PRs", hints: [hint("S", "start daemon"), hint("R", "reload config"), hint("s", "settings"), hint("q", "quit")] };
+        if (listFiltering())
+          return { title: "Watched PRs · filter", hints: [hint("type", "to filter by repo or title"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
+        if (ticketFocus())
+          return {
+            title: "Jira tickets",
+            hints: [
+              hint("↑↓", "move"),
+              hint("o", "open ticket"),
+              hint("d", "dismiss"),
+              hint("p", "pause/resume"),
+              hint("t/esc", "back to PRs"),
+              hint("r", "refresh all"),
+              hint("q", "quit"),
+            ],
+          };
+        return {
+          title: "Watched PRs",
+          hints: [
+            hint("↑↓", "move"),
+            ...(listQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")]),
+            hint("enter", "history"),
+            hint("o", "open"),
+            hint("n", "watch a PR"),
+            hint("g", "repos"),
+            hint("c", "check now"),
+            hint("r", "refresh all"),
+            hint("d", "unwatch"),
+            hint("p", "pause/resume"),
+            ...(showTickets() ? [hint("t", "tickets")] : []),
+            hint("s", "settings"),
+            hint("R", "reload config"),
+            hint("q", "quit"),
+          ],
+        };
     }
   };
+
+  /** Columns left of the always-shown `? help` (app padding on both sides, a two-space gap). */
+  const footerWidth = () => Math.max(0, dims().width - 2 - hintText(HELP_HINT).length - 2);
+  const footerLeft = () => {
+    const sc = shortcuts();
+    return sc.prompt ? pad(sc.prompt, footerWidth()) : fitHints(sc.hints, footerWidth());
+  };
+  /** The `?` dialog's rows: the current screen's shortcuts, then the two that work everywhere. */
+  const helpRows = () =>
+    filterHints(
+      [
+        ...shortcuts().hints.map((h) => ({ ...h, global: false })),
+        { key: "?", label: "show or hide this list (works everywhere)", global: true },
+        { key: "ctrl+c", label: "quit (works everywhere)", global: true },
+      ],
+      helpQuery(),
+    );
+  const showHelpFilter = () => helpFiltering() || helpQuery() !== "";
+  const helpHeight = () => Math.max(6, Math.min(shortcuts().hints.length + 7, dims().height - 4));
 
   return (
     <box flexDirection="column" width="100%" height="100%" padding={1}>
@@ -1275,10 +1407,61 @@ export function App(props: AppProps) {
         </box>
       </Show>
 
-      <box height={1} marginTop={1}>
-        <Show when={flash()} fallback={<text fg={theme().textMuted}>{footer()}</text>}>
-          <text fg={flash()!.error ? theme().error : theme().success}>{flash()!.text}</text>
-        </Show>
+      <Show when={helpOpen()}>
+        <box position="absolute" top={0} left={0} width="100%" height="100%" zIndex={20} alignItems="center" justifyContent="center">
+          <box
+            flexDirection="column"
+            border
+            borderColor={theme().accent}
+            title={` Shortcuts · ${shortcuts().title} `}
+            backgroundColor={theme().modalBackground}
+            width={Math.max(40, Math.min(70, dims().width - 8))}
+            height={helpHeight()}
+            paddingLeft={1}
+            paddingRight={1}
+          >
+            <Show when={showHelpFilter()}>
+              <box flexDirection="row" height={1} flexShrink={0}>
+                <text fg={theme().accent}>/ </text>
+                <text>{helpQuery()}</text>
+                <text fg={theme().accent}>{helpFiltering() ? "▏" : ""}</text>
+              </box>
+            </Show>
+            <scrollbox ref={(el: ScrollBoxRenderable) => (helpScroll = el)} flexGrow={1} minHeight={0}>
+              <Show when={helpRows().length > 0} fallback={<text fg={theme().textMuted}>No shortcuts match "{helpQuery()}".</text>}>
+                <For each={helpRows()}>
+                  {(h, i) => (
+                    <box flexDirection="row" flexShrink={0} marginTop={h.global && !helpRows()[i() - 1]?.global && i() > 0 ? 1 : 0}>
+                      <text fg={theme().accent} flexShrink={0}>
+                        {pad(h.key, 12)}{" "}
+                      </text>
+                      <text fg={h.global ? theme().textMuted : undefined}>{h.label}</text>
+                    </box>
+                  )}
+                </For>
+              </Show>
+            </scrollbox>
+            <text fg={theme().textMuted} flexShrink={0}>
+              {helpFiltering()
+                ? "type to filter by key or action · enter done · esc clear"
+                : helpQuery()
+                  ? "/ change filter · esc clear filter · ? or enter to close"
+                  : "/ filter · esc, ? or enter to close"}
+            </text>
+          </box>
+        </box>
+      </Show>
+
+      <box height={1} marginTop={1} flexDirection="row">
+        <box flexGrow={1} flexShrink={1} minWidth={0} height={1}>
+          <Show when={flash()} fallback={<text fg={theme().textMuted}>{footerLeft()}</text>}>
+            <text fg={flash()!.error ? theme().error : theme().success}>{pad(flash()!.text, footerWidth())}</text>
+          </Show>
+        </box>
+        <text fg={theme().textMuted} flexShrink={0}>
+          {"  "}
+          {hintText(HELP_HINT)}
+        </text>
       </box>
     </box>
   );

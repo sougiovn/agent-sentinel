@@ -276,8 +276,10 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `s` | Settings |
 | `R` | Reload config and theme in the TUI and the daemon |
 | `S` | Retry starting the daemon (when it's offline) |
+| `?` | Show or hide every shortcut for the current screen |
 | `q` / `Ctrl+C` | Quit |
 
+- **Footer and `?`:** the footer lists the current screen's shortcuts, most used first, and keeps as many whole ones as fit the terminal width; a `…` marks the ones left out. `? help` is always shown at the right. `?` opens a dialog listing all of the current screen's shortcuts, plus the two that work everywhere (`?` and `Ctrl+C`). It works on every screen, including while a filter input or a value being edited has focus, so `?` can't be typed into those inputs. While the dialog is open other keys are ignored; `Esc`, `?` or `Enter` close it, and `↑`/`↓` scroll it when it doesn't fit. `/` filters the list: every word must appear in a shortcut's key or action. While typing, `Enter` keeps the filter and `Esc` clears it; with a filter kept, `Esc` clears it first and a second `Esc` closes the dialog. A filter input open under the dialog keeps its text and focus. A pending unwatch or dismiss confirmation is cancelled when `?` is pressed. Messages such as "Saved" replace the footer hints for 5 seconds but leave `? help` in place.
 - **Daemon offline:** while the daemon is starting, the TUI shows "Starting Sentinel daemon…". If it fails to start or stops later, the TUI shows the error and offers `S` to try again.
 - **Config errors:** an invalid config file, or a daemon running on its last good config, is shown in a red banner.
 - **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`.
@@ -300,6 +302,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `/` | Filter: every word must appear in the repo name or path, the branch, the worktree path, or a linked PR (`#number`, title, status) or ticket (key, summary, status). Only matching worktrees are shown, and repos with none are hidden. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `o` | Open the selected worktree's first PR in the browser, or its first ticket when it has no PR |
 | `r` | Rescan the repo roots; the selection stays on the same worktree |
+| `?` | Show or hide this view's shortcuts |
 | `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
 **Settings** open in a dialog over the PR list. Every config field is listed with its current value, one line each (long values are cut short), and the list scrolls to keep the selection visible.
@@ -312,6 +315,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `/` | Filter settings by name: every word must appear in the label or config key. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `e` | Open the selected template (`fixPromptTemplate`, `introPromptTemplate`) in `$VISUAL` or `$EDITOR` (default `vi`) |
 | `r` | Reload config and theme (inside settings; the main view uses `R` for this) |
+| `?` | Show or hide the settings shortcuts (also while a value is being edited) |
 | `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
 - Lists (ignored authors, failing conclusions, agent args) are edited as comma-separated text.
@@ -428,6 +432,8 @@ The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sen
 Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, theme parsing (defaults, partial files, status merge, invalid colours and unknown keys), database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, the repos view data (parsing `git worktree list --porcelain`, listing main checkouts but not linked worktrees, tying PRs to the deepest worktree and tickets by handed-off PR, key in the branch or directory name, then session directory, a repo whose worktrees can't be listed, roots that don't exist), new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, a custom theme and its live reload (including an invalid edit keeping the last good theme), and starting the daemon.
 
 TUI tests also cover the repos view: worktrees with their PR and ticket, opening them, the `/` filter, scrolling in a short terminal with the footer kept visible, `r` rescanning with the selection kept on the same worktree, the empty-roots message, and refusing to open while the daemon is offline.
+
+The footer and `?` dialog are tested for: `? help` kept visible while the other hints are truncated with `…` in a narrow terminal; the dialog listing every shortcut, titled for the main view, settings, the repos view and a value being edited; its `/` filter, with keys like `q` typed as text and a PR filter underneath keeping its focus; other keys ignored while it's open; opening from a focused filter input or a value being edited without typing `?` into it; a pending unwatch cancelled by `?`; and `? help` staying next to a "Saved" message. The hint fitting and filtering functions have unit tests.
 
 Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 

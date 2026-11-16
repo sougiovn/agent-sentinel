@@ -532,3 +532,179 @@ test("TUI repos view needs the daemon", async () => {
   expect(t.captureCharFrame()).toContain("Start the daemon first (S)");
   t.renderer.destroy();
 });
+
+test("TUI footer keeps ? help visible, truncates the rest, and ? lists every shortcut", async () => {
+  const t0 = makeDaemon();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 80, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  const footer = (f: string) => f.split("\n").filter((l) => l.trim()).at(-1)!;
+  let f = await frame();
+  expect(footer(f)).toMatch(/…\s+\? help\s*$/);
+  expect(footer(f)).not.toContain("q quit");
+
+  t.mockInput.pressKey("?");
+  f = await frame();
+  expect(f).toContain("Shortcuts · Watched PRs");
+  expect(f).toContain("watch a PR");
+  expect(f).toContain("reload config");
+  expect(f).toContain("quit (works everywhere)");
+  t.mockInput.pressKey("s"); // ignored while the dialog is open
+  f = await frame();
+  expect(f).toContain("Shortcuts · Watched PRs");
+  t.mockInput.pressEscape();
+  f = await frame();
+  expect(f).not.toContain("Shortcuts ·");
+  expect(f).not.toContain("Settings ·");
+
+  // `?` opens help while the filter input has focus, and isn't typed into it.
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("?");
+  f = await frame();
+  expect(f).toContain("Shortcuts · Watched PRs · filter");
+  expect(f).toContain("to filter by repo or title");
+  t.mockInput.pressKey("?");
+  f = await frame();
+  expect(f).not.toContain("Shortcuts ·");
+  expect(f).not.toMatch(/^\s*\/ \?/m);
+  t.renderer.destroy();
+});
+
+test("TUI shortcuts dialog filters with / and leaves a filter underneath focused", async () => {
+  const t0 = makeDaemon();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 120, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("?");
+  await frame();
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("watch");
+  let f = await frame();
+  expect(f).toContain("/ watch");
+  expect(f).toContain("watch a PR");
+  expect(f).not.toContain("reload config");
+  expect(f).not.toContain("quit (works everywhere)");
+
+  t.mockInput.pressBackspace();
+  await t.mockInput.typeText("x"); // "watcx" matches nothing; q and s are typed, not acted on
+  f = await frame();
+  expect(f).toContain('No shortcuts match "watcx"');
+  t.mockInput.pressEnter(); // stop typing, keep the filter
+  await frame();
+  t.mockInput.pressEscape(); // clear the filter
+  f = await frame();
+  expect(f).toContain("Shortcuts · Watched PRs");
+  expect(f).toContain("reload config");
+  t.mockInput.pressEscape(); // close
+  f = await frame();
+  expect(f).not.toContain("Shortcuts ·");
+
+  // Open help over the PR filter input, filter in the dialog, close it: typing still reaches the PR filter.
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("ab");
+  t.mockInput.pressKey("?");
+  await frame();
+  t.mockInput.pressKey("/");
+  await t.mockInput.typeText("zz");
+  expect(await frame()).toContain("/ zz");
+  t.mockInput.pressEscape(); // clear the dialog filter
+  await frame();
+  t.mockInput.pressEscape(); // close the dialog
+  await frame();
+  await t.mockInput.typeText("c");
+  f = await frame();
+  expect(f).not.toContain("Shortcuts ·");
+  expect(f).toMatch(/\/ abc/);
+  t.renderer.destroy();
+});
+
+test("TUI ? works on every screen: settings, a value being edited, a pending confirmation, and next to a message", async () => {
+  const t0 = makeDaemon();
+  t0.gh.add(parsePrRef("acme/web#1"), { title: "Fix login redirect" });
+  await t0.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s", cwd: t0.paths.home });
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 120, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  const footer = (f: string) => f.split("\n").filter((l) => l.trim()).at(-1)!;
+  await frame();
+
+  // A pending unwatch is cancelled by ?, and the PR stays watched.
+  t.mockInput.pressKey("d");
+  expect(footer(await frame())).toMatch(/Unwatch github\.com\/acme\/web#1\?.*\? help\s*$/);
+  t.mockInput.pressKey("?");
+  expect(await frame()).toContain("Shortcuts · Watched PRs");
+  t.mockInput.pressEscape();
+  let f = await frame();
+  expect(footer(f)).not.toContain("Unwatch");
+  expect(t0.store.getPr("github.com/acme/web#1")).not.toBeNull();
+
+  // Settings has its own list.
+  t.mockInput.pressKey("s");
+  await frame();
+  t.mockInput.pressKey("?");
+  f = await frame();
+  expect(f).toContain("Shortcuts · Settings");
+  expect(f).toContain("edit template");
+  t.mockInput.pressEscape();
+  await frame();
+
+  // Saving shows "Saved" with ? help still at the right.
+  t.mockInput.pressEnter(); // cycles the multiplexer
+  expect(footer(await frame())).toMatch(/Saved\s+\? help\s*$/);
+
+  // While a value is being edited, ? opens help instead of being typed.
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("session name");
+  t.mockInput.pressEnter();
+  await frame();
+  t.mockInput.pressEnter(); // edit the value
+  await frame();
+  t.mockInput.pressKey("?");
+  f = await frame();
+  expect(f).toContain("Shortcuts · Editing a value");
+  t.mockInput.pressEscape(); // close help
+  await frame();
+  t.mockInput.pressEnter(); // save the untouched value
+  await frame();
+  const r = loadConfig(t0.paths.config);
+  expect(r.ok && r.config.spawn.sessionName).toBe("sentinel");
+  t.renderer.destroy();
+});
+
+test("TUI shortcuts dialog is titled for the repos view", async () => {
+  const t0 = makeDaemon();
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [join(t0.paths.home, "missing")];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 120, height: 30 });
+  await Bun.sleep(100);
+  t.mockInput.pressKey("g");
+  await Bun.sleep(100);
+  t.mockInput.pressKey("?");
+  await Bun.sleep(100);
+  await t.renderOnce();
+  const f = t.captureCharFrame();
+  expect(f).toContain("Shortcuts · Repos");
+  expect(f).toContain("open PR or ticket");
+  expect(f).toContain("rescan");
+  t.renderer.destroy();
+});
