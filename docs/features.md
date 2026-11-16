@@ -142,16 +142,16 @@ Queued items wait in SQLite (`pending_items`) until their session can take them 
 
 ### Panes
 
-Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). Each agent session gets one pane, named after the work it handles: the Jira ticket key (`CP-7713`), or the repo and number of each PR it watches (`web#42`, comma-separated if there are several). A session with neither falls back to `<agent>:<first 8 chars of session ID>`. The pane's ID is stored so it can be reused, and the name is set once, when the pane is created.
+Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). herdr-core (`hc`) has neither: there, Sentinel owns the terminals that carry its label (see the last bullet). Each agent session gets one pane, named after the work it handles: the Jira ticket key (`CP-7713`), or the repo and number of each PR it watches (`web#42`, comma-separated if there are several). A session with neither falls back to `<agent>:<first 8 chars of session ID>`. The pane's ID is stored so it can be reused, and the name is set once, when the pane is created.
 
 - `spawn.layout: "sentinel-tab"` (default): new panes go into an existing Sentinel tab that has fewer than `spawn.maxPanesPerTab` panes (default 4), alternating right and below splits. When every tab is full, Sentinel opens a new one.
 - `spawn.layout: "tab-per-session"`: every new pane gets its own tab, named like the pane. Shared tabs (`sentinel-tab`) keep numbered names: `sentinel-1`, `sentinel-2`, and so on.
-- Sentinel remembers its home session/workspace by id, so it keeps finding it after an agent inside renames it (Rex prompts Claude to label its session). It falls back to `spawn.sessionName` only when that id is gone.
+- With Rex and Herdr, Sentinel remembers its home session/workspace by id, so it keeps finding it after an agent inside renames it (Rex prompts Claude to label its session). It falls back to `spawn.sessionName` only when that id is gone.
 - With Rex, every prompt Sentinel delivers ends with a note telling the agent not to rename the shared Rex session. It mustn't rename its tab either: with `sentinel-tab` other agents share it, and with `tab-per-session` Sentinel has already named it after the ticket or PR.
 - Panes start as an interactive shell in the agent's directory, and Sentinel types commands into them. New panes and tabs don't take focus.
-- If the stored pane no longer exists (closed by the user, or the Sentinel session was killed), Sentinel creates a new one, and recreates the session or workspace if needed.
+- If the stored pane no longer exists (closed by the user, or the Sentinel session was killed), Sentinel creates a new one, and with Rex and Herdr recreates the session or workspace if needed.
 - Changing `multiplexer` makes the next delivery open a new pane in the new multiplexer.
-- **herdr-core (`hc`)** has no sessions, tabs or splits. Each agent session gets its own terminal, started detached from any parent terminal, in the agent's directory, with the labels `sentinel=<spawn.sessionName>` and `pane=<agent>:<id>`. `spawn.layout` and `spawn.maxPanesPerTab` don't apply. List them with `hc ls --label sentinel=sentinel`. A terminal that has finished counts as gone, so the next delivery opens a new one.
+- **herdr-core (`hc`)** has no sessions, tabs or splits. Each agent session gets its own terminal, started detached from any parent terminal, in the agent's directory, with the labels `sentinel=<spawn.sessionName>` and `pane=<pane label>` (the pane name described above). `spawn.layout` and `spawn.maxPanesPerTab` don't apply. List them with `hc ls --label sentinel=<spawn.sessionName>`. A terminal that has finished counts as gone, so the next delivery opens a new one. Sentinel types with `hc send` without `--force`, which differs from Rex and Herdr in two ways: `hc` refuses to type while the program is blocked on a dialog, so that delivery fails (see "When delivery fails") and Sentinel never answers the dialog; and `hc` holds the text while a person has an unfinished draft in the terminal, so delivery can be delayed.
 
 ### What gets typed
 
@@ -173,12 +173,12 @@ After a successful delivery, the session is marked busy and its PRs' status beco
 
 ### When delivery fails
 
-If the multiplexer can't be reached (Rex down, Herdr server or herdr-core core not running) or a pane command fails:
+If the multiplexer can't be reached (Rex down, Herdr server not running, `hc` missing or its core failing to start) or a pane command fails:
 
 - each affected PR's status becomes `spawn_failed` with the error;
 - the queued items are dropped and un-marked as seen.
 
-The next poll then sees them as new again and evaluates them together with anything newer, so nothing is lost and the agent gets one combined prompt. Sentinel never starts the Herdr server or the herdr-core core itself.
+The next poll then sees them as new again and evaluates them together with anything newer, so nothing is lost and the agent gets one combined prompt. Sentinel never starts the Herdr server. herdr-core is different: on macOS and Linux the `hc` commands Sentinel runs start the core when it isn't running, so a stopped core is started on first use and is not a failure. On Windows `hc server status` doesn't start it, so start it yourself with `hc server start`.
 
 ## Agent state hooks
 

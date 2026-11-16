@@ -563,18 +563,18 @@ describe("rex mux", () => {
 });
 
 describe("hc mux", () => {
-  /** Minimal hc stand-in: terminals by address, each live or finished; `down` mimics a stopped core. */
+  /** Minimal hc stand-in: terminals by address, each live or finished. On macOS/Linux `hc` starts a stopped core itself, so `startFails` mimics a core that can't start. */
   function fakeHc() {
     const terminals = new Map<string, { state: string; labels: string[]; cwd: string; sent: string[] }>();
     const calls: string[][] = [];
     let n = 0;
-    let down = false;
+    let startFails = false;
     const ok = (o: unknown) => ({ code: 0, stdout: JSON.stringify(o), stderr: "" });
     const notFound = (t: string) => ({ code: 3, stdout: JSON.stringify({ error: { kind: "not_found", message: `no terminal "${t}"` } }), stderr: "" });
     const exec: Exec = async (cmd) => {
       calls.push(cmd);
       const a = cmd.slice(1);
-      if (a[0] === "server") return down ? { code: 1, stdout: "", stderr: "core not running" } : ok({ live: terminals.size });
+      if (a[0] === "server") return startFails ? { code: 1, stdout: "", stderr: "core failed to start" } : ok({ live: terminals.size });
       if (a[0] === "run") {
         const address = `t${++n}`;
         const labels = a.flatMap((v, i) => (a[i - 1] === "--label" ? [v] : []));
@@ -590,7 +590,7 @@ describe("hc mux", () => {
       }
       return ok({});
     };
-    return { terminals, calls, exec, setDown: (v: boolean) => (down = v) };
+    return { terminals, calls, exec, setStartFails: (v: boolean) => (startFails = v) };
   }
 
   const opts = (o: Partial<CreatePaneOptions> = {}): CreatePaneOptions => ({
@@ -612,8 +612,9 @@ describe("hc mux", () => {
     expect(hc.terminals.get("t1")).toMatchObject({ cwd: "/repo", labels: ["sentinel=sentinel", "pane=claude:abcd1234"] });
     expect(hc.terminals.get("t2")!.cwd).toBe("/other");
     const run = hc.calls.find((c) => c[1] === "run")!;
-    expect(run).toContain("--bg");
-    expect(run).toContain("--no-parent");
+    for (const flag of ["--bg", "--json", "--no-parent", "--no-notify"]) expect(run).toContain(flag);
+    expect(run[run.indexOf("--cwd") + 1]).toBe("/repo");
+    expect(run.flatMap((v, i) => (run[i - 1] === "--label" ? [v] : []))).toEqual(["sentinel=sentinel", "pane=claude:abcd1234"]);
   });
 
   test("sends a line to the terminal", async () => {
@@ -634,11 +635,11 @@ describe("hc mux", () => {
     expect(await mux.paneExists("t99")).toBe(false);
   });
 
-  test("reports an unreachable core", async () => {
+  test("reports a core that fails to start, or a missing hc", async () => {
     const hc = fakeHc();
     const mux = new HcMux(hc.exec);
     await mux.ensureAvailable();
-    hc.setDown(true);
+    hc.setStartFails(true);
     await expect(mux.ensureAvailable()).rejects.toBeInstanceOf(MuxUnavailableError);
     const missing = new HcMux(async () => {
       throw new Error("Executable not found in $PATH: \"hc\"");

@@ -5,6 +5,9 @@ import { MuxUnavailableError, parseJson, type CreatePaneOptions, type Multiplexe
  * herdr-core (`hc`), the core behind Herdr.app. It has no workspaces, tabs or splits: every session gets
  * its own terminal, so `layout` and `maxPanesPerTab` don't apply. Terminals carry a `sentinel=<home>` label
  * so they can be found in Herdr.app and with `hc ls --label`.
+ *
+ * On macOS/Linux the `hc` calls made here start the core if it isn't running, so a stopped core is not a failure
+ * here: only a missing `hc` or a core that fails to start is.
  */
 export class HcMux implements Multiplexer {
   readonly name = "hc" as const;
@@ -18,7 +21,7 @@ export class HcMux implements Multiplexer {
       stderr: e.message,
     }));
     if (r.code !== 0) {
-      throw new MuxUnavailableError(`herdr-core is not reachable (run \`hc server start\`): ${(r.stderr || r.stdout).trim()}`);
+      throw new MuxUnavailableError(`herdr-core is not available (is \`hc\` installed, and can its core start?): ${(r.stderr || r.stdout).trim()}`);
     }
   }
 
@@ -53,6 +56,8 @@ export class HcMux implements Multiplexer {
       "hc run",
     ) as { address?: unknown };
     if (typeof out.address !== "string" || !out.address) throw new Error("hc run did not return a terminal address");
+    // hc has no tabs or home object. Only paneId is used to reach the terminal; the address and the
+    // `sentinel=` label value fill tabId and homeId so the stored session and home records stay non-empty.
     return { paneId: out.address, tabId: out.address, homeId: opts.homeName };
   }
 

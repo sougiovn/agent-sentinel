@@ -30,6 +30,11 @@ test("TUI renders offline state and settings view, and saves an enum toggle", as
   await Bun.sleep(100);
   const r = loadConfig(paths.config);
   expect(r.ok && r.config.multiplexer).toBe("herdr");
+
+  t.mockInput.pressEnter(); // cycle multiplexer herdr → hc
+  await Bun.sleep(100);
+  const r2 = loadConfig(paths.config);
+  expect(r2.ok && r2.config.multiplexer).toBe("hc");
   t.renderer.destroy();
 });
 

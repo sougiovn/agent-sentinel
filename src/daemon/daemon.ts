@@ -18,6 +18,12 @@ import { Sentinel } from "./sentinel.ts";
 import { TicketWatcher } from "./tickets.ts";
 import { AcliJira, type JiraClient } from "../jira/acli.ts";
 
+const MUXES: Record<Config["multiplexer"], () => Multiplexer> = {
+  rex: () => new RexMux(),
+  herdr: () => new HerdrMux(),
+  hc: () => new HcMux(),
+};
+
 const PROMPT_RETENTION_MS = 7 * 24 * 3600_000;
 
 /** Manual full polls are refused for this long after the previous accepted one. */
@@ -125,7 +131,7 @@ export class Daemon {
     const name = this.config.multiplexer;
     let m = this.muxCache.get(name);
     if (!m) {
-      m = this.o.muxFactory ? this.o.muxFactory(name) : name === "rex" ? new RexMux() : name === "hc" ? new HcMux() : new HerdrMux();
+      m = this.o.muxFactory ? this.o.muxFactory(name) : MUXES[name]();
       this.muxCache.set(name, m);
     }
     return m;

@@ -14,7 +14,7 @@ ln -s "$PWD/dist/sentinel" ~/.local/bin/sentinel
 sentinel skill install   # teaches Claude Code / Codex how to hand off PRs
 ```
 
-Jira tickets also need the [Atlassian CLI](https://developer.atlassian.com/cloud/acli/) (`acli jira auth login`). Requires `gh` (authenticated), `claude`, and `rex`, `herdr` or `hc` on `PATH`. `mise` installs `bun` and `gh`; install `claude`, `codex`, Rex and Herdr with their own installers. The Herdr server or the herdr-core core (`hc server start`) must already be running; Sentinel doesn't start either.
+Jira tickets also need the [Atlassian CLI](https://developer.atlassian.com/cloud/acli/) (`acli jira auth login`). Requires `gh` (authenticated), `claude`, and `rex`, `herdr` or `hc` on `PATH`. `mise` installs `bun` and `gh`; install `claude`, `codex`, Rex, Herdr and herdr-core with their own installers (`hc`: `https://releases.herdr.dev/core/install.sh`). The Herdr server must already be running; Sentinel doesn't start it. On macOS and Linux, `hc` starts the herdr-core core on demand. On Windows, start it with `hc server start`.
 
 If you run Claude Code with its sandbox on, add `~/.config/sentinel/sentinel.sock` to `sandbox.network.allowUnixSockets` in `~/.claude/settings.json`, or `sentinel watch` from your own sessions can't reach the daemon. Sessions Sentinel launches get this allowance automatically.
 
@@ -55,7 +55,7 @@ In the PR picker: type to filter by org, repo, `#number` or title, `↑/↓` to 
    - On success, every item in the batch is marked seen.
    - On error, nothing is marked seen and the next poll retries.
 4. **Queue**: flagged items queue per **agent session**, one fix at a time per session. Sessions run in parallel, limited by `spawn.maxConcurrent` (0 = unlimited).
-5. **Deliver** into a pane Sentinel owns. With the default `spawn.layout: "sentinel-tab"`, there is one session/workspace named `spawn.sessionName`, holding one pane per agent session, with up to `maxPanesPerTab` panes before another tab opens.
+5. **Deliver** into a pane Sentinel owns. With the default `spawn.layout: "sentinel-tab"`, there is one session/workspace named `spawn.sessionName`, holding one pane per agent session, with up to `maxPanesPerTab` panes before another tab opens. With `hc` there is no session, workspace or tab: each agent session gets its own labeled terminal, and `spawn.layout` doesn't apply.
    - New pane, or the agent has exited: Sentinel types `claude --resume <id> --settings <hooks> … -- "<prompt>"` (or `codex resume <id> …`) into the pane. A session started from the dashboard uses `--session-id <id>` on its first launch, plus its `--model`/`--effort`.
    - Agent still running and idle: Sentinel types a one-line pointer to the prompt file.
 6. **Track state**: agent hooks call `sentinel hook idle|busy|exit`, which marks the session busy or idle. `spawn.busyTimeoutMin` frees a session if no idle signal arrives.
