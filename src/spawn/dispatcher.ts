@@ -19,6 +19,15 @@ export interface DispatcherDeps {
 
 export type DispatchResult = "delivered" | "queued" | "paused" | "empty" | "failed";
 
+export interface GoToAgentResult {
+  paneId: string;
+  tabId: string;
+  /** `focused`: the agent was already running in its pane; `resumed`: relaunched in its existing pane; `opened`: in a new tab. */
+  how: "focused" | "resumed" | "opened";
+  /** Set when the pane is ready but couldn't be fully brought to the front. */
+  warning?: string;
+}
+
 export interface DeliverHooks {
   onDelivered: (paneId: string, promptFile: string, now: number) => void;
   onFailed: (msg: string, now: number) => void;
@@ -219,18 +228,7 @@ export class Dispatcher {
         );
 
       if (!paneId) {
-        const homeKey = `mux_home:${mux.name}:${cfg.spawn.sessionName}`;
-        const ref = await mux.createPane({
-          homeName: cfg.spawn.sessionName,
-          homeId: store.getMeta(homeKey) ?? undefined,
-          layout: cfg.spawn.layout,
-          maxPanesPerTab: cfg.spawn.maxPanesPerTab,
-          cwd: session.cwd,
-          label: this.paneLabel(session),
-        });
-        paneId = ref.paneId;
-        store.setMeta(homeKey, ref.homeId);
-        store.updateSession(sessionId, { mux: mux.name, pane_id: ref.paneId, tab_id: ref.tabId });
+        paneId = (await this.openPane(mux, session)).paneId;
         await mux.sendLine(paneId, launch());
       } else if (session.agent_running && session.started) {
         await mux.sendLine(paneId, injectionLine(promptFile));
@@ -246,6 +244,70 @@ export class Dispatcher {
       hooks.onFailed(msg, now);
       this.d.log(`session ${sessionId}: spawn failed: ${msg}`);
       return "failed";
+    }
+  }
+
+  /** Creates a pane for the session in Sentinel's home session/workspace and records it on the session. */
+  private async openPane(mux: Multiplexer, session: SessionRow, extra: { ownTab?: boolean; focus?: boolean } = {}) {
+    const { store } = this.d;
+    const cfg = this.d.config();
+    const homeKey = `mux_home:${mux.name}:${cfg.spawn.sessionName}`;
+    const ref = await mux.createPane({
+      homeName: cfg.spawn.sessionName,
+      homeId: store.getMeta(homeKey) ?? undefined,
+      layout: cfg.spawn.layout,
+      maxPanesPerTab: cfg.spawn.maxPanesPerTab,
+      cwd: session.cwd,
+      label: this.paneLabel(session),
+      ...extra,
+    });
+    store.setMeta(homeKey, ref.homeId);
+    store.updateSession(session.session_id, { mux: mux.name, pane_id: ref.paneId, tab_id: ref.tabId });
+    return ref;
+  }
+
+  /**
+   * Brings a session to the front so the user can talk to the agent in its worktree. Focuses the agent's
+   * pane when it's still running there; otherwise resumes the agent (without a prompt) in its old pane,
+   * or in a new tab when that pane is gone.
+   */
+  async goToAgent(sessionId: string): Promise<GoToAgentResult> {
+    const { store } = this.d;
+    const session = store.getSession(sessionId);
+    if (!session) throw new Error(`Unknown session ${sessionId}`);
+    if (!session.started) throw new Error("The session hasn't started yet; Sentinel launches it with its first prompt");
+    if (this.inFlight.has(sessionId)) throw new Error("Sentinel is delivering to this session right now; try again in a moment");
+    this.inFlight.add(sessionId);
+    try {
+      const mux = this.d.mux();
+      await mux.ensureAvailable();
+      const home = store.getMeta(`mux_home:${mux.name}:${this.d.config().spawn.sessionName}`);
+      let ref =
+        session.pane_id && session.tab_id && session.mux === mux.name && home && (await mux.paneExists(session.pane_id))
+          ? { paneId: session.pane_id, tabId: session.tab_id, homeId: home }
+          : null;
+      let how: GoToAgentResult["how"] = "focused";
+      if (!ref) {
+        ref = await this.openPane(mux, session, { ownTab: true, focus: true });
+        how = "opened";
+      } else if (!session.agent_running) {
+        how = "resumed";
+      }
+      if (how !== "focused") {
+        const line = launchCommand(
+          { agent: session.agent, sessionId, cwd: session.cwd, model: session.model, effort: session.effort },
+          this.d.config(),
+          this.d.paths,
+          this.d.self,
+        );
+        await mux.sendLine(ref.paneId, line);
+        store.updateSession(sessionId, { state: "idle", busy_since: null, agent_running: 1, last_signal_at: this.d.now() });
+      }
+      const warning = await mux.focusPane(ref);
+      this.d.log(`session ${sessionId}: went to agent (${how}) in pane ${ref.paneId}`);
+      return { paneId: ref.paneId, tabId: ref.tabId, how, ...(warning ? { warning } : {}) };
+    } finally {
+      this.inFlight.delete(sessionId);
     }
   }
 

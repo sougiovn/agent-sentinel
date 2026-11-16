@@ -155,6 +155,22 @@ export function App(props: AppProps) {
     flashTimer = setTimeout(() => setFlash(null), 5000);
   };
 
+  /** Opens the session in the multiplexer and focuses it, so the user can talk to the agent in its worktree. */
+  const goToAgent = async (sessionId: string | undefined, what: string) => {
+    if (!sessionId) {
+      notify(`${what} has no agent session yet`, true);
+      return;
+    }
+    try {
+      const r = await client.call("goToAgent", { sessionId }, 30_000);
+      const verb = r.how === "focused" ? "Went to" : r.how === "resumed" ? "Resumed" : "Reopened";
+      notify(r.warning ? `${verb} ${what}'s agent, but ${r.warning}` : `${verb} ${what}'s agent`, !!r.warning);
+    } catch (e) {
+      notify(`Could not go to ${what}'s agent: ${(e as Error).message}`, true);
+    }
+    await refresh();
+  };
+
   const refresh = async () => {
     try {
       const [st, list] = await Promise.all([client.call("status", {}, 3000), client.call("list", {}, 3000)]);
@@ -589,6 +605,9 @@ export function App(props: AppProps) {
           case "d":
             if (t) setConfirmDismiss(true);
             return;
+          case "a":
+            if (key.shift && t) await goToAgent(t.session?.session_id, t.key);
+            return;
           case "p": {
             if (!t?.session) return;
             const paused = !t.session.paused;
@@ -669,6 +688,11 @@ export function App(props: AppProps) {
         case "d":
           if (current()) setConfirmDelete(true);
           return;
+        case "a": {
+          const pr = current();
+          if (key.shift && pr) await goToAgent(pr.session?.session_id, pr.id);
+          return;
+        }
         case "p": {
           const pr = current();
           if (!pr?.session) return;
@@ -1007,6 +1031,7 @@ export function App(props: AppProps) {
             hints: [
               hint("↑↓", "move"),
               hint("o", "open ticket"),
+              hint("A", "go to agent"),
               hint("d", "dismiss"),
               hint("p", "pause/resume"),
               hint("t/esc", "back to PRs"),
@@ -1021,6 +1046,7 @@ export function App(props: AppProps) {
             ...(listQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")]),
             hint("enter", "history"),
             hint("o", "open"),
+            hint("A", "go to agent"),
             hint("n", "watch a PR"),
             hint("g", "repos"),
             hint("c", "check now"),

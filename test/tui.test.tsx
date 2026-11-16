@@ -335,6 +335,42 @@ test("TUI asks to start the daemon before opening the PR picker", async () => {
   t.renderer.destroy();
 });
 
+test("TUI goes to the selected PR's or ticket's agent with A", async () => {
+  const t0 = makeDaemon();
+  const cfg = defaultConfig();
+  cfg.jira.enabled = true;
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  t0.gh.add(parsePrRef("acme/web#1"));
+  await t0.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+  t0.jira.add("CP-7", { summary: "Add audit log" });
+  await t0.daemon.runTicketPoll();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 160, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(150);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  expect(await frame()).toContain("A go to agent");
+
+  t.mockInput.pressKey("a"); // lowercase does nothing
+  await frame();
+  expect(t0.mux.focused).toHaveLength(0);
+
+  t.mockInput.pressKey("a", { shift: true });
+  expect(await frame()).toContain("Reopened github.com/acme/web#1's agent");
+  expect(t0.mux.focused.at(-1)!.paneId).toBe(t0.store.getSession("s1")!.pane_id!);
+
+  t.mockInput.pressKey("t");
+  await frame();
+  t.mockInput.pressKey("a", { shift: true });
+  expect(await frame()).toContain("Went to CP-7's agent");
+  const ticketSession = t0.store.getTicket("CP-7")!.session_id;
+  expect(t0.mux.focused.at(-1)!.paneId).toBe(t0.store.getSession(ticketSession)!.pane_id!);
+  t.renderer.destroy();
+});
+
 test("TUI shows picked-up Jira tickets and dismisses one", async () => {
   const t0 = makeDaemon();
   const cfg = defaultConfig();

@@ -140,6 +140,16 @@ Queued items wait in SQLite (`pending_items`) until their session can take them 
 - **Pause:** a paused session (TUI key `p`) keeps queueing but receives nothing until it's resumed. Resuming triggers a delivery attempt.
 - **Prompt:** items are grouped by PR, and each group is rendered with `fixPromptTemplate`, which supports `{{prUrl}}`, `{{reason}}` and `{{items}}`. Groups are joined with `---`. The default template asks the agent to fix, commit and push, to reply only to bot comments, and never to reply to or resolve human comments. The rendered prompt is saved to `~/.config/sentinel/prompts/<session>-<timestamp>.md`.
 
+### Going to the agent
+
+`A` (agent) on a PR or a Jira ticket takes you to its agent session, so you can talk to the agent in the right worktree:
+
+- If the agent is still running in its pane, Sentinel focuses that pane.
+- If the pane is there but the agent has exited, Sentinel resumes the agent in it, without a prompt.
+- If the pane is gone, Sentinel opens a new tab for it in its own session/workspace, named after the pane, resumes the agent there and focuses it.
+
+Rex also gets asked to show Sentinel's session (`rex do session.select`). That is a client action, so it only works with Remote Control on and one Rex app open. When it fails, the pane is still focused inside Sentinel's session, and the TUI shows why. A session Sentinel hasn't started yet (its first prompt is still queued) can't be gone to yet.
+
 ### Panes
 
 Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). Each agent session gets one pane, named after the work it handles: the Jira ticket key (`CP-7713`), or the repo and number of each PR it watches (`web#42`, comma-separated if there are several). A session with neither falls back to `<agent>:<first 8 chars of session ID>`. The pane's ID is stored so it can be reused, and the name is set once, when the pane is created.
@@ -272,7 +282,8 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `r` | Refresh all watched PRs now and restart the poll countdown (single-flight, 30s cooldown) |
 | `d`, then `y` | Unwatch the selected PR |
 | `p` | Pause or resume deliveries to the PR's agent session |
-| `t` | Move the selection between the PR list and the Jira tickets list. With a ticket selected: `↑/↓` move, `o` opens it in the browser, `d` dismisses it (asks first), `p` pauses or resumes its session, `t`/`Esc` go back to PRs |
+| `A` | Go to the PR's agent session (see [Going to the agent](#going-to-the-agent)) |
+| `t` | Move the selection between the PR list and the Jira tickets list. With a ticket selected: `↑/↓` move, `o` opens it in the browser, `A` goes to its agent, `d` dismisses it (asks first), `p` pauses or resumes its session, `t`/`Esc` go back to PRs |
 | `s` | Settings |
 | `R` | Reload config and theme in the TUI and the daemon |
 | `S` | Retry starting the daemon (when it's offline) |

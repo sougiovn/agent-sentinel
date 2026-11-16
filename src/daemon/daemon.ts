@@ -346,6 +346,8 @@ export class Daemon {
         if (!paused) await this.dispatcher.dispatch(sessionId);
         return { ok: true } as R;
       }
+      case "goToAgent":
+        return (await this.dispatcher.goToAgent((p as RpcMethods["goToAgent"][0]).sessionId)) as R;
       case "reload":
         return this.reload() as R;
       case "stop":

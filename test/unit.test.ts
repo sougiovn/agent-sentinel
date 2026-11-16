@@ -174,6 +174,14 @@ describe("launcher", () => {
     const cmd = launchCommand({ agent: "claude", sessionId: "s-1", cwd: "/w", promptFile: "/p/f.md", newSession: true }, defaultConfig(), paths, ["/bin/sentinel"]);
     expect(cmd).toMatch(/--add-dir '[^']+' -- "\$\(cat '\/p\/f\.md'\)"$/);
   });
+  test("without a prompt file the agent just opens the session", () => {
+    const claude = launchCommand({ agent: "claude", sessionId: "s-1", cwd: "/w" }, defaultConfig(), paths, ["/bin/sentinel"]);
+    expect(claude).toStartWith(`cd '/w' && 'claude' --resume 's-1' `);
+    expect(claude).not.toContain(" -- ");
+    expect(claude).not.toContain("$(cat");
+    const codex = launchCommand({ agent: "codex", sessionId: "t-1", cwd: "/w" }, defaultConfig(), paths, ["/bin/sentinel"]);
+    expect(codex).toEndWith(`'t-1'`);
+  });
   test("codex launch command", () => {
     const cmd = launchCommand({ agent: "codex", sessionId: "t-1", cwd: "/w", promptFile: "/p/f.md" }, defaultConfig(), paths, ["/bin/sentinel"]);
     expect(cmd).toStartWith(`cd '/w' && 'codex' resume '-c' `);
@@ -589,6 +597,35 @@ describe("rex mux", () => {
     await new RexMux(shared.exec).createPane(opts({ label: "CP-1" }));
     expect(shared.calls.find((c) => c[1] === "new")).toContain("sentinel-1");
     expect(shared.calls).toContainEqual(["rex", "block", "rename", "block:3", "CP-1"]);
+  });
+
+  test("ownTab opens a focused tab named after the pane even in the shared layout", async () => {
+    const rex = fakeRex();
+    const mux = new RexMux(rex.exec);
+    const first = await mux.createPane(opts());
+    const own = await mux.createPane(opts({ homeId: first.homeId, label: "CP-9", ownTab: true, focus: true }));
+    expect(own.tabId).not.toBe(first.tabId);
+    expect(rex.calls.some((c) => c[1] === "split")).toBe(false);
+    const win = rex.calls.find((c) => c[1] === "window" && c[2] === "new")!;
+    expect(win[5]).toBe("CP-9");
+    expect(win).toContain("--focus=true");
+    await mux.createPane(opts({ homeId: first.homeId, layout: "tab-per-session" }));
+    expect(rex.calls.filter((c) => c[1] === "window" && c[2] === "new").at(-1)).toContain("--focus=false");
+  });
+
+  test("focusPane focuses the block and asks the app to show its session", async () => {
+    const rex = fakeRex();
+    const mux = new RexMux(rex.exec);
+    expect(await mux.focusPane({ paneId: "block:7", tabId: "window:6", homeId: "session:5" })).toBeUndefined();
+    expect(rex.calls).toEqual([
+      ["rex", "focus", "-s", "session:5", "block:7"],
+      ["rex", "do", "session.select", "session_id=session:5", "window_id=window:6"],
+    ]);
+
+    const refusing: Exec = async (cmd) =>
+      cmd[2] === "session.select" ? { code: 1, stdout: "", stderr: "Remote Control is off" } : { code: 0, stdout: "{}", stderr: "" };
+    const warning = await new RexMux(refusing).focusPane({ paneId: "block:7", tabId: "window:6", homeId: "session:5" });
+    expect(warning).toContain("Remote Control is off");
   });
 
   test("falls back to the label when the stored session is gone", async () => {

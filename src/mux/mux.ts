@@ -18,13 +18,17 @@ export interface CreatePaneOptions {
   layout: Layout;
   maxPanesPerTab: number;
   cwd: string;
-  /** Names the pane, and the tab too when the tab is the session's own (`tab-per-session`). */
+  /** Names the pane, and the tab too when the tab is the session's own (`tab-per-session` or `ownTab`). */
   label: string;
+  /** Always open a new tab for the pane, whatever the layout. */
+  ownTab?: boolean;
+  /** Make the new pane's tab the active one. Defaults to false so background work doesn't steal focus. */
+  focus?: boolean;
 }
 
 /** Name for a new tab: the session's label when it gets its own tab, else `<home>-<n>` for a shared one. */
 export function tabName(opts: CreatePaneOptions, existingTabs: number): string {
-  return opts.layout === "tab-per-session" ? opts.label : `${opts.homeName}-${existingTabs + 1}`;
+  return opts.layout === "tab-per-session" || opts.ownTab ? opts.label : `${opts.homeName}-${existingTabs + 1}`;
 }
 
 export class MuxUnavailableError extends Error {}
@@ -39,6 +43,11 @@ export interface Multiplexer {
   createPane(opts: CreatePaneOptions): Promise<PaneRef>;
   /** Types a line into the pane and presses Enter. */
   sendLine(paneId: string, text: string): Promise<void>;
+  /**
+   * Brings the pane to the front: its session/workspace, tab and pane. Returns a warning when only part
+   * of that worked (e.g. the app refused to switch sessions), so the caller can still report success.
+   */
+  focusPane(ref: PaneRef): Promise<string | undefined>;
 }
 
 /** Recursively finds the first string value stored under `key`. */

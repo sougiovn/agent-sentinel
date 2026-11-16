@@ -282,6 +282,54 @@ describe("per-session queue", () => {
   });
 });
 
+describe("go to agent", () => {
+  test("opens a handed-off session in its own focused tab, then focuses it, and resumes it after the agent exits", async () => {
+    const d = makeDaemon();
+    d.gh.add(parsePrRef("acme/web#1"));
+    await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+
+    const opened = await d.daemon.handle("goToAgent", { sessionId: "s1" });
+    expect(opened.how).toBe("opened");
+    const pane = d.mux.panes.get(opened.paneId)!;
+    expect(pane.opts).toMatchObject({ ownTab: true, focus: true, cwd: "/r", label: "web#1" });
+    expect(pane.lines).toHaveLength(1);
+    expect(pane.lines[0]).toStartWith(`cd '/r' && 'claude' --resume 's1' `);
+    expect(pane.lines[0]).not.toContain("$(cat");
+    expect(d.mux.focused.map((r) => r.paneId)).toEqual([opened.paneId]);
+    expect(d.store.getSession("s1")).toMatchObject({ pane_id: opened.paneId, agent_running: 1, state: "idle" });
+
+    const again = await d.daemon.handle("goToAgent", { sessionId: "s1" });
+    expect(again).toMatchObject({ how: "focused", paneId: opened.paneId });
+    expect(pane.lines).toHaveLength(1);
+    expect(d.mux.panes.size).toBe(1);
+
+    await d.daemon.handle("signal", { sessionId: "s1", signal: "exit" });
+    const resumed = await d.daemon.handle("goToAgent", { sessionId: "s1" });
+    expect(resumed).toMatchObject({ how: "resumed", paneId: opened.paneId });
+    expect(pane.lines).toHaveLength(2);
+    expect(d.mux.focused).toHaveLength(3);
+  });
+
+  test("reports a partial focus as a warning", async () => {
+    const d = makeDaemon();
+    d.gh.add(parsePrRef("acme/web#1"));
+    await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+    d.mux.focusWarning = "Rex app did not switch to the session";
+    expect((await d.daemon.handle("goToAgent", { sessionId: "s1" })).warning).toBe("Rex app did not switch to the session");
+  });
+
+  test("refuses unknown sessions, sessions not started yet, and an unreachable multiplexer", async () => {
+    const d = makeDaemon();
+    await expect(d.daemon.handle("goToAgent", { sessionId: "nope" })).rejects.toThrow("Unknown session");
+    d.store.ensureSession("s2", "claude", "/r", { started: false });
+    await expect(d.daemon.handle("goToAgent", { sessionId: "s2" })).rejects.toThrow("hasn't started yet");
+    d.gh.add(parsePrRef("acme/web#1"));
+    await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+    d.mux.available = false;
+    await expect(d.daemon.handle("goToAgent", { sessionId: "s1" })).rejects.toThrow("rex down");
+  });
+});
+
 describe("rpc", () => {
   test("list, history, unwatch, check", async () => {
     const t = await setup();

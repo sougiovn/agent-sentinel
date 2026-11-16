@@ -1,6 +1,7 @@
 import type { EventRow, PrRow, SessionRow, TicketRow } from "../core/types.ts";
 import type { WatchRequest, WatchResult } from "./sentinel.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
+import type { GoToAgentResult } from "../spawn/dispatcher.ts";
 
 export interface StatusInfo {
   pid: number;
@@ -130,6 +131,7 @@ export interface RpcMethods {
   history: [{ pr: string }, EventRow[]];
   signal: [{ sessionId: string; signal: HookSignal }, { known: boolean }];
   pause: [{ sessionId: string; paused: boolean }, { ok: true }];
+  goToAgent: [{ sessionId: string }, GoToAgentResult];
   reload: [Record<string, never>, { ok: boolean; error: string | null }];
   stop: [Record<string, never>, { ok: true }];
 }

@@ -112,6 +112,12 @@ export class FakeMux implements Multiplexer {
   async sendLine(id: string, text: string) {
     this.panes.get(id)!.lines.push(text);
   }
+  focused: PaneRef[] = [];
+  focusWarning: string | undefined;
+  async focusPane(ref: PaneRef) {
+    this.focused.push(ref);
+    return this.focusWarning;
+  }
   allLines() {
     return [...this.panes.values()].flatMap((p) => p.lines);
   }

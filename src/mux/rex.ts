@@ -77,7 +77,7 @@ export class RexMux implements Multiplexer {
       byWindow.set(b.window_id, [...(byWindow.get(b.window_id) ?? []), b]);
     }
 
-    if (opts.layout === "sentinel-tab") {
+    if (opts.layout === "sentinel-tab" && !opts.ownTab) {
       for (const [windowId, ws] of byWindow) {
         if (ws.length >= opts.maxPanesPerTab) continue;
         const anchor = ws[ws.length - 1]!;
@@ -114,7 +114,7 @@ export class RexMux implements Multiplexer {
         tabName(opts, byWindow.size),
         "-c",
         opts.cwd,
-        "--focus=false",
+        `--focus=${opts.focus === true}`,
         "--json",
       ]),
       "rex window new",
@@ -128,6 +128,14 @@ export class RexMux implements Multiplexer {
 
   private async label(paneId: string, label: string) {
     await this.run(["rex", "block", "rename", paneId, label]);
+  }
+
+  async focusPane(ref: PaneRef) {
+    await this.rex(["focus", "-s", ref.homeId, ref.paneId]);
+    // Showing the session in the app is a client action: it needs Remote Control on, and one open app.
+    const r = await this.run(["rex", "do", "session.select", `session_id=${ref.homeId}`, `window_id=${ref.tabId}`]);
+    if (r.code !== 0) return `Rex app did not switch to the session: ${(r.stderr || r.stdout).trim()}`;
+    return undefined;
   }
 
   async sendLine(paneId: string, text: string) {
