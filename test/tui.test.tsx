@@ -830,3 +830,35 @@ test("TUI won't reopen a thread resolved on GitHub, and says when there's no rep
   expect(copied).toEqual([]);
   t.renderer.destroy();
 });
+
+test("TUI shows a PR's merge state and a conflict banner in its details", async () => {
+  const d = makeDaemon();
+  d.gh.add(parsePrRef("acme/web#1"), { title: "Conflicting", mergeable: "CONFLICTING", baseRefName: "develop" });
+  d.gh.add(parsePrRef("acme/web#2"), { title: "Clean", mergeable: "MERGEABLE", baseRefName: "main" });
+  for (const r of ["acme/web#1", "acme/web#2"]) await d.daemon.handle("watch", { prs: [r], agent: "claude", sessionId: "s1", cwd: "/r" });
+  const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={d.paths} autoStart={false} client={client} />, { width: 140, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(80);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  let f = await frame();
+  expect(f).toContain("MERGE");
+  const row = (title: string) => f.split("\n").find((l) => l.includes(title))!;
+  expect(row("Conflicting")).toContain("conflict");
+  expect(row("Clean")).toContain(" ok ");
+
+  t.mockInput.pressEnter(); // details of the first PR
+  f = await frame();
+  expect(f).toContain("Merge conflict with `develop`");
+
+  t.mockInput.pressEscape();
+  await frame();
+  t.mockInput.pressArrow("down");
+  await frame();
+  t.mockInput.pressEnter();
+  f = await frame();
+  expect(f).not.toContain("Merge conflict with");
+  t.renderer.destroy();
+});

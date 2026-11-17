@@ -1,6 +1,6 @@
 # Agent Sentinel
 
-A background daemon that watches GitHub PRs handed off by AI agent sessions (Claude Code, Codex), or picked from its dashboard. It polls for new review comments and failing checks, asks a cheap Claude model whether they need work, and resumes the agent session in your multiplexer ([Rex](https://www.superlogical.com/rex/docs/automate/cli) or [Herdr](https://herdr.dev/)) to fix them. For PRs picked in the dashboard, Sentinel starts a new Claude session. It can also watch Jira: label a ticket assigned to you, and Sentinel starts a Claude session that works the ticket.
+A background daemon that watches GitHub PRs handed off by AI agent sessions (Claude Code, Codex), or picked from its dashboard. It polls for new review comments, failing checks and merge conflicts with the base branch, asks a cheap Claude model whether the comments and checks need work, and resumes the agent session in your multiplexer ([Rex](https://www.superlogical.com/rex/docs/automate/cli) or [Herdr](https://herdr.dev/)) to fix them. For PRs picked in the dashboard, Sentinel starts a new Claude session. It can also watch Jira: label a ticket assigned to you, and Sentinel starts a Claude session that works the ticket.
 
 See [docs/features.md](docs/features.md) for a full description of what's implemented and how each part behaves.
 
@@ -94,9 +94,9 @@ Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `trans
 
 ## How it works
 
-1. **Poll** (every `pollIntervalSec`, PRs one at a time). Sentinel reads `gh pr view` for state, title, body and checks, `gh api` for inline comments, conversation comments and reviews, and `gh api graphql` for whether each review thread is resolved. It keeps `user.login` and `user.type` for every author, and updates the list of human comments that are still open (see [Human comments](docs/features.md#human-comments)).
-2. **Diff** against `seen_items` in SQLite. New comments and reviews count, except from `ignoredAuthors` (by default `@me`, the authenticated `gh` user). Checks count only with a conclusion listed in `failingConclusions`.
-3. **Evaluate** the whole batch in one `claude -p --model <evaluator.model>` call with a JSON schema and no tools, run from `~/.config/sentinel/eval`. Failed checks include the tail of `gh run view --log-failed`.
+1. **Poll** (every `pollIntervalSec`, PRs one at a time). Sentinel reads `gh pr view` for state, title, body, checks and mergeability (whether the PR conflicts with its base branch), `gh api` for inline comments, conversation comments and reviews, and `gh api graphql` for whether each review thread is resolved. It keeps `user.login` and `user.type` for every author, and updates the list of human comments that are still open (see [Human comments](docs/features.md#human-comments)).
+2. **Diff** against `seen_items` in SQLite. New comments and reviews count, except from `ignoredAuthors` (by default `@me`, the authenticated `gh` user). Checks count only with a conclusion listed in `failingConclusions`. A merge conflict counts once per head commit; GitHub's `UNKNOWN` (still computing) is ignored (see [Detecting new activity](docs/features.md#detecting-new-activity)).
+3. **Evaluate** the whole batch in one `claude -p --model <evaluator.model>` call with a JSON schema and no tools, run from `~/.config/sentinel/eval`. Failed checks include the tail of `gh run view --log-failed`. Merge conflicts skip the evaluator and are always queued.
    - On success, every item in the batch is marked seen.
    - On error, nothing is marked seen and the next poll retries.
 4. **Queue**: flagged items queue per **agent session**, one fix at a time per session. Sessions run in parallel, limited by `spawn.maxConcurrent` (0 = unlimited).

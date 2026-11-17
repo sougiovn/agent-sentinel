@@ -1,11 +1,11 @@
 ---
 name: sentinel
-description: Hand off GitHub pull requests to Agent Sentinel so it watches them for new review comments and failing checks, and resumes this agent session to fix them. Use after opening or pushing a PR when you want follow-up review feedback handled automatically, or when the user says "watch this PR", "hand off to sentinel", "monitor my PRs", or asks what Sentinel is watching.
+description: Hand off GitHub pull requests to Agent Sentinel so it watches them for new review comments, failing checks and merge conflicts, and resumes this agent session to fix them. Use after opening or pushing a PR when you want follow-up review feedback handled automatically, or when the user says "watch this PR", "hand off to sentinel", "monitor my PRs", or asks what Sentinel is watching.
 ---
 
 # Agent Sentinel
 
-Sentinel is a background daemon that polls PRs, uses a cheap Claude model to decide whether new comments or failing checks need work, and then resumes **this** agent session in a terminal multiplexer pane (Rex or Herdr) with the details.
+Sentinel is a background daemon that polls PRs, uses a cheap Claude model to decide whether new comments or failing checks need work, and then resumes **this** agent session in a terminal multiplexer pane (Rex or Herdr) with the details. A merge conflict with the base branch always resumes the session, once per head commit: bring the base into the PR branch, resolve the conflicts, run the tests and push.
 
 ## Hand off PRs
 
@@ -24,7 +24,7 @@ Sentinel detects who you are from your environment:
 - Working directory: the current directory (the session is resumed there)
 
 Override when needed: `--agent claude|codex`, `--session <id>`, `--cwd <dir>`.
-Existing comments and checks are treated as already seen; pass `--include-existing` to evaluate them now.
+Existing comments and checks are treated as already seen; pass `--include-existing` to evaluate them now. An existing merge conflict is not: it's delivered on the first poll.
 
 If the daemon isn't running, `sentinel watch` starts it.
 
@@ -32,7 +32,7 @@ If the daemon isn't running, `sentinel watch` starts it.
 
 | Command | What it does |
 | --- | --- |
-| `sentinel list` | PRs being watched, their agent/session, last check and status |
+| `sentinel list` | PRs being watched, their agent/session, last check, open human comments, merge state and status |
 | `sentinel unwatch <pr>` | Stop watching a PR |
 | `sentinel check [<pr>]` | Poll now instead of waiting for the interval |
 | `sentinel comments <pr>` | Human comments on the PR, whether they're resolved, and their drafts |

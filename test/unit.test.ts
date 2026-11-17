@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { defaultConfig, loadConfig, parseConfig, saveConfig } from "../src/core/config.ts";
 import { parsePrRef, prId } from "../src/core/pr-ref.ts";
 import { detectAgent, hookSessionId, hookStopActive } from "../src/cli/detect.ts";
-import { draftState, formatHumanComments, formatList, humanCommentLocation, prGroup, prLabel, prLine, sortByGroup } from "../src/cli/format.ts";
+import { draftState, formatHumanComments, formatList, humanCommentLocation, mergeLabel, prGroup, prLabel, prLine, sortByGroup } from "../src/cli/format.ts";
 import type { HumanCommentRow } from "../src/core/types.ts";
 import { DaemonUnavailableError, type Client } from "../src/cli/client.ts";
 import { stopDaemon } from "../src/cli/daemon-control.ts";
@@ -163,6 +163,19 @@ describe("snapshot", () => {
   test("resolved inline ids come from review threads", () => {
     expect([...resolvedInlineIds(activity)]).toEqual(["inline:1"]);
   });
+  test("a conflict is an item keyed by head SHA, only when GitHub says CONFLICTING", () => {
+    const withMerge = (mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN") => ({
+      ...activity,
+      view: { ...activity.view, mergeable, baseRefName: "main" },
+    });
+    const conflict = normalize(withMerge("CONFLICTING")).find((i) => i.kind === "merge_conflict");
+    expect(conflict).toMatchObject({ id: "conflict:abc", baseRef: "main" });
+    expect(newItems([conflict!], new Set(), opts)).toHaveLength(1);
+    expect(humanItems(normalize(withMerge("CONFLICTING")), opts).map((i) => i.id)).toEqual(["review:4"]);
+    for (const m of ["MERGEABLE", "UNKNOWN"] as const) {
+      expect(normalize(withMerge(m)).some((i) => i.kind === "merge_conflict")).toBe(false);
+    }
+  });
 });
 
 describe("launcher", () => {
@@ -259,6 +272,14 @@ describe("prompt", () => {
     expect(text).toContain("PR https://x/2 because r2");
     expect(text).toContain("Failed check: a (FAILURE)");
   });
+  test("a merge conflict names the base branch and how to resolve it", () => {
+    const text = renderFixPrompt("{{items}}", [
+      { prUrl: "u", reason: "r", items: [{ id: "conflict:abc", kind: "merge_conflict", baseRef: "main" }] },
+    ]);
+    expect(text).toContain("[conflict:abc] Merge conflict with `main`");
+    expect(text).toContain("resolve the conflicts, run the tests, and push");
+    expect(text).not.toContain("Author:");
+  });
 });
 
 describe("detect", () => {
@@ -346,6 +367,8 @@ describe("human comment formatting", () => {
     expect(line!.split(/\s{2,}/)).toContain("2");
     expect(head).toContain("MERGE");
     expect(line!.split(/\s{2,}/)).toContain("conflict");
+    expect(mergeLabel({ mergeable: "MERGEABLE" })).toBe("ok");
+    expect(mergeLabel({ mergeable: null })).toBe("-");
   });
 });
 
@@ -628,6 +651,7 @@ describe("store migrations", () => {
     const store = new Store(file);
     expect(store.getPr("github.com/a/b#1")!.title).toBeNull();
     expect(store.getPr("github.com/a/b#1")!.mergeable).toBeNull();
+    expect(store.getPr("github.com/a/b#1")!.base_ref).toBeNull();
     const s = store.getSession("s")!;
     expect([s.model, s.effort, s.started]).toEqual([null, null, 1]);
     expect(store.humanComments("github.com/a/b#1")).toEqual([]);
