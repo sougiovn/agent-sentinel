@@ -670,6 +670,8 @@ describe("store migrations", () => {
       ALTER TABLE sessions DROP COLUMN model;
       ALTER TABLE sessions DROP COLUMN effort;
       ALTER TABLE sessions DROP COLUMN started;
+      ALTER TABLE sessions DROP COLUMN awaiting_ack_since;
+      ALTER TABLE sessions DROP COLUMN awaiting_ack;
       UPDATE meta SET value = '1' WHERE key = 'schema_version';
       INSERT INTO prs (id, url, agent, session_id, cwd, registered_at) VALUES ('github.com/a/b#1', 'u', 'claude', 's', '/r', 1);
       INSERT INTO sessions (session_id, agent, cwd) VALUES ('s', 'claude', '/r');
@@ -680,7 +682,7 @@ describe("store migrations", () => {
     expect(store.getPr("github.com/a/b#1")!.mergeable).toBeNull();
     expect(store.getPr("github.com/a/b#1")!.base_ref).toBeNull();
     const s = store.getSession("s")!;
-    expect([s.model, s.effort, s.started]).toEqual([null, null, 1]);
+    expect([s.model, s.effort, s.started, s.awaiting_ack_since, s.awaiting_ack]).toEqual([null, null, 1, null, null]);
     expect(store.humanComments("github.com/a/b#1")).toEqual([]);
     expect(store.openHumanCounts().size).toBe(0);
     store.close();

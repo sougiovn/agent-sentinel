@@ -2,7 +2,7 @@ import type { Config } from "../core/config.ts";
 import type { Store } from "../core/db.ts";
 import type { Paths } from "../core/paths.ts";
 import { fromPrId } from "../core/pr-ref.ts";
-import type { Item, SessionRow } from "../core/types.ts";
+import type { AwaitingAck, Item, SessionRow } from "../core/types.ts";
 import { renderFixPrompt, rexNamingNote, type FixGroup } from "../evaluator/prompt.ts";
 import { waitForShell, type Multiplexer } from "../mux/mux.ts";
 import { injectionLine, launchCommand, writePromptFile, type HookSignal } from "./launcher.ts";
@@ -61,6 +61,7 @@ export class Dispatcher {
   }
 
   async dispatchAll(): Promise<void> {
+    this.checkStarts();
     for (const sid of this.d.store.sessionsWithPending()) await this.dispatch(sid);
   }
 
@@ -99,7 +100,8 @@ export class Dispatcher {
     }
 
     const text = renderFixPrompt(cfg.fixPromptTemplate, [...groups.values()]);
-    return this.deliver(session, text, {
+    const delivered = Object.fromEntries([...groups].map(([prId, g]) => [prId, g.items.map((i) => i.id)]));
+    return this.deliver(session, text, delivered, {
       onDelivered: (paneId, promptFile, now) => {
         store.clearPending(sessionId);
         for (const [prId, g] of groups) {
@@ -130,6 +132,7 @@ export class Dispatcher {
     const ref = fromPrId(pr.id);
     return this.startSession(
       sessionId,
+      { [pr.id]: [] },
       (session) =>
         this.d
           .config()
@@ -163,6 +166,8 @@ export class Dispatcher {
    */
   async startSession(
     sessionId: string,
+    /** PRs the session starts for, so a start that never happens can be reported on them. */
+    prs: Record<string, string[]>,
     text: (session: SessionRow) => string,
     hooks: DeliverHooks,
   ): Promise<DispatchResult> {
@@ -173,7 +178,7 @@ export class Dispatcher {
       if (!session) return "empty";
       if (session.started) return "empty";
       if (session.paused) return "paused";
-      return await this.deliver(session, text(session), {
+      return await this.deliver(session, text(session), prs, {
         onDelivered: (paneId, promptFile, now) => {
           hooks.onDelivered(paneId, promptFile, now);
           this.d.log(`session ${sessionId}: started in pane ${paneId}`);
@@ -200,6 +205,7 @@ export class Dispatcher {
   private async deliver(
     session: SessionRow,
     text: string,
+    prs: Record<string, string[]>,
     hooks: DeliverHooks,
   ): Promise<DispatchResult> {
     const { store } = this.d;
@@ -239,7 +245,16 @@ export class Dispatcher {
         await mux.sendLine(paneId, launch());
       }
 
-      store.updateSession(sessionId, { state: "busy", busy_since: now, agent_running: 1, last_signal_at: now, started: 1 });
+      const ack: AwaitingAck = { paneId, wasStarted: session.started, prs };
+      store.updateSession(sessionId, {
+        state: "busy",
+        busy_since: now,
+        agent_running: 1,
+        last_signal_at: now,
+        started: 1,
+        awaiting_ack_since: now,
+        awaiting_ack: JSON.stringify(ack),
+      });
       hooks.onDelivered(paneId, promptFile, now);
       return "delivered";
     } catch (e) {
@@ -343,7 +358,14 @@ export class Dispatcher {
     if (!s) return false;
     const now = this.d.now();
     if (signal === "busy") {
-      store.updateSession(sessionId, { state: "busy", busy_since: now, agent_running: 1, last_signal_at: now });
+      store.updateSession(sessionId, {
+        state: "busy",
+        busy_since: now,
+        agent_running: 1,
+        last_signal_at: now,
+        awaiting_ack_since: null,
+        awaiting_ack: null,
+      });
       return true;
     }
     store.updateSession(sessionId, {
@@ -351,6 +373,8 @@ export class Dispatcher {
       busy_since: null,
       agent_running: signal === "exit" ? 0 : 1,
       last_signal_at: now,
+      awaiting_ack_since: null,
+      awaiting_ack: null,
     });
     for (const pr of store.prsForSession(sessionId)) {
       if (pr.last_status === "fix_running") {
@@ -362,6 +386,46 @@ export class Dispatcher {
     await this.dispatch(sessionId);
     await this.dispatchAll();
     return true;
+  }
+
+  /**
+   * Finds deliveries the agent never confirmed: no hook signal within `spawn.startTimeoutSec` of Sentinel
+   * typing into the pane, usually because the shell didn't run the line. Rolls the items back so the next
+   * poll delivers them again, and leaves the pane alone so the user can see what happened there; the next
+   * delivery opens a new pane.
+   */
+  checkStarts() {
+    const { store } = this.d;
+    const now = this.d.now();
+    const timeoutMs = this.d.config().spawn.startTimeoutSec * 1000;
+    for (const s of store.listSessions()) {
+      if (s.awaiting_ack_since === null || now - s.awaiting_ack_since <= timeoutMs) continue;
+      let ack: AwaitingAck | null = null;
+      try {
+        ack = JSON.parse(s.awaiting_ack ?? "null") as AwaitingAck | null;
+      } catch {}
+      const pane = ack?.paneId ?? s.pane_id ?? "?";
+      const msg = `The agent didn't start within ${Math.round(timeoutMs / 1000)}s in pane ${pane}; check that pane. Sentinel will retry in a new pane.`;
+      store.updateSession(s.session_id, {
+        state: "idle",
+        busy_since: null,
+        agent_running: 0,
+        started: ack?.wasStarted ?? s.started,
+        pane_id: null,
+        tab_id: null,
+        awaiting_ack_since: null,
+        awaiting_ack: null,
+      });
+      for (const [prId, ids] of Object.entries(ack?.prs ?? {})) {
+        if (!store.getPr(prId)) continue;
+        if (ids.length) store.unmarkSeen(prId, ids);
+        store.setPrStatus(prId, "spawn_failed", msg);
+        store.addEvent(prId, "start_failed", { pane, items: ids }, now);
+      }
+      const ticket = store.ticketForSession(s.session_id);
+      if (ticket?.last_status === "started") store.setTicketStatus(ticket.key, "spawn_failed", msg);
+      this.d.log(`session ${s.session_id}: ${msg}`);
+    }
   }
 
   setPaused(sessionId: string, paused: boolean) {

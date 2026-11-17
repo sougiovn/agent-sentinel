@@ -239,6 +239,7 @@ describe("per-session queue", () => {
     const t = await setup({ now: () => now });
     t.gh.comment(ref, { id: 101 });
     await t.daemon.sentinel.tick();
+    await t.daemon.handle("signal", { sessionId: "sess-1", signal: "busy" }); // started, then no idle signal
     t.gh.comment(ref, { id: 102 });
     await t.daemon.sentinel.tick();
     expect(t.mux.allLines()).toHaveLength(1);
@@ -832,4 +833,63 @@ describe("launch reliability", () => {
     expect(t.mux.allLines()).toHaveLength(1);
   });
 
+  test("an agent that never signals is reported, rolled back and retried in a new pane", async () => {
+    let now = 1_000_000;
+    const t = await setup({ now: () => now });
+    t.gh.comment(ref, { id: 101, body: "fix" });
+    await t.daemon.sentinel.tick();
+    const [first] = [...t.mux.panes.keys()];
+    expect(t.store.getSession("sess-1")!.awaiting_ack_since).toBe(now);
+
+    now += 299_000; // within spawn.startTimeoutSec (300)
+    await t.daemon.sentinel.tick();
+    expect(t.store.getPr(ID)!.last_status).toBe("fix_running");
+
+    now += 2_000;
+    await t.daemon.sentinel.tick();
+    // The rollback happens after this pass's poll, so the next poll picks the item up again.
+    const pr = t.store.getPr(ID)!;
+    expect(pr.last_status).toBe("spawn_failed");
+    expect(pr.last_reason).toContain(`didn't start within 300s in pane ${first}`);
+    const failed = t.store.events(ID).find((e) => e.kind === "start_failed")!;
+    expect(failed.detail).toEqual({ pane: first, items: ["issue:101"] });
+    const s = t.store.getSession("sess-1")!;
+    expect([s.state, s.agent_running, s.pane_id, s.awaiting_ack_since]).toEqual(["idle", 0, null, null]);
+    expect(t.mux.panes.has(first!)).toBe(true); // left for the user to look at
+
+    await t.daemon.sentinel.tick();
+    expect(t.evaluator.calls).toHaveLength(2);
+    expect(t.mux.panes.size).toBe(2);
+    const second = [...t.mux.panes.keys()].find((k) => k !== first)!;
+    expect(t.mux.panes.get(second)!.lines[0]).toContain("--resume 'sess-1'");
+  });
+
+  test("any hook signal confirms the delivery", async () => {
+    let now = 1_000_000;
+    const t = await setup({ now: () => now });
+    t.gh.comment(ref, { id: 101 });
+    await t.daemon.sentinel.tick();
+    await t.daemon.handle("signal", { sessionId: "sess-1", signal: "busy" });
+    expect(t.store.getSession("sess-1")!.awaiting_ack).toBeNull();
+    now += 10 * 60_000;
+    await t.daemon.sentinel.tick();
+    expect(t.store.events(ID).some((e) => e.kind === "start_failed")).toBe(false);
+    expect(t.store.getPr(ID)!.last_status).toBe("fix_running");
+  });
+
+  test("a new session that never starts launches with --session-id again", async () => {
+    let now = 1_000_000;
+    const t = makeDaemon({ now: () => now });
+    t.gh.add(ref);
+    const [r] = await t.daemon.handle("watch", { prs: [PR], agent: "claude", cwd: "/repo", newSession: { startNow: true } });
+    const sid = r!.sessionId!;
+    expect(t.mux.allLines()[0]).toContain(`--session-id '${sid}'`);
+    now += 301_000;
+    await t.daemon.sentinel.tick();
+    expect(t.store.getSession(sid)!.started).toBe(0);
+    expect(t.store.getPr(ID)!.last_status).toBe("spawn_failed");
+    t.gh.comment(ref, { id: 101 });
+    await t.daemon.sentinel.tick();
+    expect(t.mux.allLines()[1]).toContain(`--session-id '${sid}'`);
+  });
 });

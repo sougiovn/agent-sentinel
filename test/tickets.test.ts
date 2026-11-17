@@ -10,8 +10,8 @@ import { formatStatus, formatTickets } from "../src/cli/format.ts";
 import { cycleEnum, displayValue, FIELDS, parseValue } from "../src/tui/settings.ts";
 import { makeDaemon } from "./fakes.ts";
 
-function withJira(patch: (c: Config) => void = () => {}) {
-  const t = makeDaemon();
+function withJira(patch: (c: Config) => void = () => {}, now?: () => number) {
+  const t = makeDaemon({ now });
   const cfg = defaultConfig();
   cfg.jira.enabled = true;
   patch(cfg);
@@ -162,6 +162,22 @@ describe("ticket polling", () => {
     expect(t.store.getTicket("CP-1")!.last_status).toBe("started");
     expect(t.mux.allLines()).toHaveLength(1);
     expect(t.jira.transitions).toHaveLength(1);
+  });
+
+  test("an agent that never starts makes the ticket spawn_failed, and the next poll starts it fresh", async () => {
+    let now = 1_000_000;
+    const t = withJira(() => {}, () => now);
+    t.jira.add("CP-1");
+    await t.daemon.runTicketPoll();
+    const sid = t.store.getTicket("CP-1")!.session_id;
+    now += 301_000;
+    await t.daemon.sentinel.tick();
+    expect(t.store.getTicket("CP-1")!.last_status).toBe("spawn_failed");
+    expect(t.store.getSession(sid)!.started).toBe(0);
+    await t.daemon.runTicketPoll();
+    expect(t.store.getTicket("CP-1")!.last_status).toBe("started");
+    expect(t.mux.panes.size).toBe(2);
+    expect(t.mux.allLines()[1]).toContain(`--session-id '${sid}'`);
   });
 
   test("transition failure keeps the agent running", async () => {

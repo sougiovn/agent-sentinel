@@ -104,6 +104,10 @@ const MIGRATIONS: string[] = [
   ALTER TABLE prs ADD COLUMN mergeable TEXT;
   ALTER TABLE prs ADD COLUMN base_ref TEXT;
   `,
+  `
+  ALTER TABLE sessions ADD COLUMN awaiting_ack_since INTEGER;
+  ALTER TABLE sessions ADD COLUMN awaiting_ack TEXT;
+  `,
 ];
 
 export const EVENTS_PER_PR = 50;

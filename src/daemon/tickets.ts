@@ -96,6 +96,7 @@ export class TicketWatcher {
     let delivered = false;
     const result = await dispatcher.startSession(
       row.session_id,
+      {},
       (session) =>
         renderTicketPrompt(cfg.promptTemplate, {
           key: t.key,

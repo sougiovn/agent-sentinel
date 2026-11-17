@@ -41,6 +41,7 @@ export const FIELDS: Field[] = [
   f("spawn.layout", "Spawn layout", "enum", (c) => c.spawn.layout, (c, v) => (c.spawn.layout = v), ["sentinel-tab", "tab-per-session"]),
   f("spawn.maxPanesPerTab", "Max panes per tab", "int", (c) => c.spawn.maxPanesPerTab, (c, v) => (c.spawn.maxPanesPerTab = v)),
   f("spawn.maxConcurrent", "Max concurrent agents (0 = unlimited)", "int", (c) => c.spawn.maxConcurrent, (c, v) => (c.spawn.maxConcurrent = v)),
+  f("spawn.startTimeoutSec", "Start timeout (sec)", "int", (c) => c.spawn.startTimeoutSec, (c, v) => (c.spawn.startTimeoutSec = v)),
   f("spawn.busyTimeoutMin", "Busy timeout (min)", "int", (c) => c.spawn.busyTimeoutMin, (c, v) => (c.spawn.busyTimeoutMin = v)),
   f("spawn.sessionName", "Sentinel session name", "string", (c) => c.spawn.sessionName, (c, v) => (c.spawn.sessionName = v)),
   f("fixPromptTemplate", "Fix prompt template", "template", (c) => c.fixPromptTemplate, (c, v) => (c.fixPromptTemplate = v)),

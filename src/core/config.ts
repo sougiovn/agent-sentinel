@@ -77,6 +77,8 @@ export const ConfigSchema = z.object({
       /** 0 = unlimited. */
       maxConcurrent: z.number().int().min(0).default(0),
       busyTimeoutMin: z.number().int().min(1).default(60),
+      /** How long an agent gets to report its first hook signal after Sentinel types a prompt or launch line. */
+      startTimeoutSec: z.number().int().min(30).default(300),
       sessionName: z.string().min(1).default("sentinel"),
     })
     .prefault({}),

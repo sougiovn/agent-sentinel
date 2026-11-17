@@ -70,6 +70,19 @@ export interface SessionRow {
   effort: string | null;
   /** 0 until Sentinel has launched a session it created itself (first launch uses --session-id). */
   started: number;
+  /** When Sentinel last typed a prompt into the pane and is still waiting for the agent's first hook signal. */
+  awaiting_ack_since: number | null;
+  /** JSON {@link AwaitingAck}: what that delivery carried, rolled back if the agent never starts. */
+  awaiting_ack: string | null;
+}
+
+/** A delivery the agent hasn't confirmed with a hook signal yet. */
+export interface AwaitingAck {
+  paneId: string;
+  /** The session's `started` before the delivery, restored if the agent never starts. */
+  wasStarted: number;
+  /** Item ids delivered per PR; an empty list for a session start with no items. */
+  prs: Record<string, string[]>;
 }
 
 /** Options for a session Sentinel creates itself rather than one handed off by an agent. */
