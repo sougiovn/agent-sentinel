@@ -895,3 +895,78 @@ test("TUI shows a PR's merge state and a conflict banner in its details", async 
   expect(f).not.toContain("Merge conflict with");
   t.renderer.destroy();
 });
+
+test("TUI sessions view (v): sessions by repo with their PRs and tickets, and actions on each line", async () => {
+  const d = makeDaemon();
+  const cfg = defaultConfig();
+  cfg.jira.enabled = true;
+  saveConfig(d.paths.config, cfg);
+  d.daemon.reload();
+  for (const [r, title, s] of [["acme/web#12", "Fix login redirect", "s1"], ["acme/web#14", "Bump sdk", "s2"], ["acme/api#88", "Bump sdk", "s2"]] as const) {
+    d.gh.add(parsePrRef(r), { title });
+    await d.daemon.handle("watch", { prs: [r], agent: "claude", sessionId: s, cwd: "/r" });
+  }
+  d.jira.add("CP-9", { summary: "Rate limit exports" });
+  await d.daemon.runTicketPoll();
+  const ticketSession = d.store.getTicket("CP-9")!.session_id;
+  const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
+  const opened: string[] = [];
+  const t = await testRender(() => <App paths={d.paths} autoStart={false} client={client} openUrl={(u) => opened.push(u)} />, { width: 150, height: 34 });
+  const frame = async () => {
+    await Bun.sleep(120);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  expect(await frame()).toContain("Watched PRs");
+
+  t.mockInput.pressKey("v");
+  let f = await frame();
+  expect(f).toContain("Sessions · 3");
+  expect(f).not.toContain("Watched PRs");
+  expect(f).not.toContain("Jira tickets ·");
+  const at = (text: string) => f.indexOf(text);
+  expect(at("acme/web\n") < at("● s1")).toBe(true);
+  expect(at("● s1") < at("#12 - Fix login redirect")).toBe(true);
+  expect(at("Multiple repositories") < at("acme/api #88 - Bump sdk")).toBe(true);
+  expect(at("No PR yet") < at("CP-9 - Rate limit exports")).toBe(true);
+  expect(f).toContain("2 PRs");
+  expect(f).toContain("1 ticket");
+
+  t.mockInput.pressKey("p"); // pause the selected session
+  await frame();
+  expect(d.store.getSession("s1")!.paused).toBe(1);
+
+  t.mockInput.pressArrow("down"); // #12
+  f = await frame();
+  expect(f).toContain("https://github.com/acme/web/pull/12 · session s1");
+  t.mockInput.pressKey("o");
+  await frame();
+  expect(opened).toEqual(["https://github.com/acme/web/pull/12"]);
+  t.mockInput.pressEnter(); // PR details
+  f = await frame();
+  expect(f).toContain("History · github.com/acme/web#12");
+  t.mockInput.pressEscape();
+  await frame();
+
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("rate limit");
+  f = await frame();
+  expect(f).toContain("CP-9 - Rate limit exports");
+  expect(f).not.toContain("Fix login redirect");
+  t.mockInput.pressEnter();
+  t.mockInput.pressArrow("down"); // the ticket
+  f = await frame();
+  expect(f).toContain("Rate limit exports");
+  t.mockInput.pressKey("o");
+  await frame();
+  expect(opened.at(-1)).toContain("CP-9");
+  t.mockInput.pressKey("a", { shift: true });
+  expect(await frame()).toContain("CP-9's agent");
+  expect(d.store.getTicket("CP-9")!.session_id).toBe(ticketSession);
+
+  t.mockInput.pressEscape(); // clear the filter
+  t.mockInput.pressKey("v");
+  expect(await frame()).toContain("Watched PRs");
+  t.renderer.destroy();
+});
