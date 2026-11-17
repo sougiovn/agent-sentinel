@@ -694,6 +694,14 @@ describe("hc mux", () => {
     expect(run.flatMap((v, i) => (run[i - 1] === "--label" ? [v] : []))).toEqual(["sentinel=sentinel", "pane=claude:abcd1234"]);
   });
 
+  test("focusPane can't bring a terminal to the front, so it says how to reach it", async () => {
+    const hc = fakeHc();
+    const mux = new HcMux(hc.exec);
+    const ref = await mux.createPane(opts({ ownTab: true, focus: true }));
+    expect(await mux.focusPane(ref)).toContain(`hc attach ${ref.paneId}`);
+    expect(hc.calls.filter((c) => c[1] !== "run")).toEqual([]);
+  });
+
   test("sends a line to the terminal", async () => {
     const hc = fakeHc();
     const mux = new HcMux(hc.exec);

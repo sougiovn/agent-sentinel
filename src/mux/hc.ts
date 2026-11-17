@@ -61,6 +61,15 @@ export class HcMux implements Multiplexer {
     return { paneId: out.address, tabId: out.address, homeId: opts.homeName };
   }
 
+  /**
+   * hc can't bring a terminal to the front: `hc attach` shows one only by taking over the terminal it runs in,
+   * which the daemon doesn't have. The terminal is ready, so this reports how to reach it instead of failing.
+   * `ownTab` and `focus` in createPane are ignored for the same reason.
+   */
+  async focusPane(ref: PaneRef) {
+    return `hc can't bring a terminal to the front; open it in Herdr.app or run \`hc attach ${ref.paneId}\``;
+  }
+
   async sendLine(paneId: string, text: string) {
     await execOk(this.run, ["hc", "send", paneId, text, "--json"]);
   }

@@ -150,6 +150,8 @@ Queued items wait in SQLite (`pending_items`) until their session can take them 
 
 Rex also gets asked to show Sentinel's session (`rex do session.select`). That is a client action, so it only works with Remote Control on and one Rex app open. When it fails, the pane is still focused inside Sentinel's session, and the TUI shows why. A session Sentinel hasn't started yet (its first prompt is still queued) can't be gone to yet.
 
+herdr-core (`hc`) has no way to bring a terminal to the front. With `hc`, Sentinel still gets the agent's terminal ready the same way (resuming the agent, or opening a new terminal when the old one has finished), and the TUI tells you to open it in Herdr.app or run `hc attach <terminal>`.
+
 ### Panes
 
 Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). herdr-core (`hc`) has neither: there, Sentinel owns the terminals that carry its label (see the last bullet). Each agent session gets one pane, named after the work it handles: the Jira ticket key (`CP-7713`), or the repo and number of each PR it watches (`web#42`, comma-separated if there are several). A session with neither falls back to `<agent>:<first 8 chars of session ID>`. The pane's ID is stored so it can be reused, and the name is set once, when the pane is created.
