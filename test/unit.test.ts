@@ -14,7 +14,7 @@ import { renderFixPrompt, rexNamingNote } from "../src/evaluator/prompt.ts";
 import { humanItems, newItems, normalize, resolvedInlineIds } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq, writeClaudeHookSettings } from "../src/spawn/launcher.ts";
 import { getPaths } from "../src/core/paths.ts";
-import { cycleEnum, FIELDS, filterFields, parseValue } from "../src/tui/settings.ts";
+import { cycleEnum, FIELDS, filterFields, fullLabel, parseValue, SECTIONS, settingsRows } from "../src/tui/settings.ts";
 import { DEFAULT_THEME, loadTheme, parseTheme, saveTheme, statusColor } from "../src/tui/theme.ts";
 import { fakeGit } from "./fakes.ts";
 import type { Exec } from "../src/core/exec.ts";
@@ -479,9 +479,33 @@ describe("settings filter", () => {
   test("matches label and key words, case-insensitive", () => {
     expect(labels("")).toHaveLength(FIELDS.length);
     expect(labels("busy")).toEqual(["Busy timeout (min)"]);
-    expect(labels("NEW WATCH effort")).toEqual(["New watch: default effort", "New watch: effort choices"]);
-    expect(labels("spawn.layout")).toEqual(["Spawn layout"]);
+    expect(labels("NEW WATCH effort")).toEqual(["Default effort", "Effort choices"]);
+    expect(labels("jira model")).toEqual(["Model"]);
+    expect(labels("spawn.layout")).toEqual(["Layout"]);
     expect(labels("zzz")).toEqual([]);
+  });
+
+  test("splits fields into tabs and lays them out under group headings", () => {
+    expect(SECTIONS).toEqual(["General", "Pull requests", "Tickets"]);
+    const pr = FIELDS.filter((f) => f.section === "Pull requests");
+    const rows = settingsRows(filterFields(pr, "model"));
+    expect(rows.map((r) => (r.kind === "field" ? r.field.key : `group:${r.title}`))).toEqual([
+      "group:Evaluator",
+      "evaluator.model",
+      "group:New watch",
+      "newWatch.model",
+      "newWatch.models",
+    ]);
+    expect(settingsRows(FIELDS.filter((f) => f.section === "General"))[0]).toEqual({ kind: "field", field: FIELDS[0]! });
+    expect(fullLabel(FIELDS.find((f) => f.key === "jira.model")!)).toBe("Tickets › Agent › Model");
+  });
+
+  test("cycles enums both ways, wrapping", () => {
+    const mode = FIELDS.find((f) => f.key === "jira.mode")!;
+    const c = defaultConfig();
+    c.jira.mode = "pr-watch";
+    expect(cycleEnum(mode, c)).toBe("pr");
+    expect(cycleEnum(mode, c, -1)).toBe("plan");
   });
 });
 

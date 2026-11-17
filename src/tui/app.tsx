@@ -17,7 +17,7 @@ import { filterPrs, filterWatched } from "./pr-filter.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { filterRepos, repoLabel, tilde, worktreeLabel } from "./repo-labels.ts";
 import { filterHints, fitHints, HELP_HINT, hintText, type Hint } from "./shortcuts.ts";
-import { cycleEnum, displayValue, editText, FIELDS, filterFields, parseValue } from "./settings.ts";
+import { cycleEnum, displayValue, editText, FIELDS, filterFields, fullLabel, parseValue, SECTIONS, settingsRows, type Field, type SettingsRow } from "./settings.ts";
 import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type Theme } from "./theme.ts";
 
 type View = "list" | "history" | "settings" | "pick-pr" | "new-watch" | "repos";
@@ -116,7 +116,9 @@ export function App(props: AppProps) {
   const [settingsQuery, setSettingsQuery] = createSignal("");
   /** The settings filter input has focus. */
   const [settingsFiltering, setSettingsFiltering] = createSignal(false);
-  const shownFields = () => filterFields(FIELDS, settingsQuery());
+  /** Index into SECTIONS of the settings tab being shown. */
+  const [settingsTab, setSettingsTab] = createSignal(0);
+  const shownFields = () => filterFields(FIELDS.filter((f) => f.section === SECTIONS[settingsTab()]), settingsQuery());
   const selectedField = () => shownFields()[fieldSel()];
   const [editing, setEditing] = createSignal<string | null>(null);
 
@@ -650,7 +652,7 @@ export function App(props: AppProps) {
         return;
       }
       if (key.name === "t" && !confirmDelete()) {
-        if (tickets().length === 0) notify(showTickets() ? "No Jira tickets picked up yet" : "Jira tickets are off (jira.enabled in settings)", true);
+        if (tickets().length === 0) notify(showTickets() ? "No Jira tickets picked up yet" : "Jira tickets are off (Tickets › Jira › Pick up tickets in settings)", true);
         else setTicketFocus((f) => !f);
         return;
       }
@@ -729,6 +731,7 @@ export function App(props: AppProps) {
           readConfig();
           setSettingsQuery("");
           setSettingsFiltering(false);
+          setSettingsTab(0);
           setFieldSel(0);
           setView("settings");
           return;
@@ -885,6 +888,12 @@ export function App(props: AppProps) {
     }
     if (v === "settings") {
       const cfg = config();
+      if (key.name === "tab") {
+        const n = SECTIONS.length;
+        setSettingsTab((t) => (t + (key.shift ? n - 1 : 1)) % n);
+        setFieldSel(0);
+        return;
+      }
       const last = shownFields().length - 1;
       if (settingsFiltering()) {
         if (key.name === "escape") {
@@ -926,6 +935,15 @@ export function App(props: AppProps) {
         case "e":
           if (field?.kind === "template") await editTemplate();
           return;
+        case "left":
+        case "h":
+        case "right":
+        case "l":
+          if (cfg && field?.kind === "enum") {
+            const dir = key.name === "left" || key.name === "h" ? -1 : 1;
+            await persist((c) => field.set(c, cycleEnum(field, c, dir)));
+          }
+          return;
         case "return":
         case "space":
           if (!cfg || !field) return;
@@ -950,7 +968,7 @@ export function App(props: AppProps) {
     try {
       value = parseValue(field, text);
     } catch (e) {
-      notify(`${field.label}: ${(e as Error).message}`, true);
+      notify(`${fullLabel(field)}: ${(e as Error).message}`, true);
       return;
     }
     await persist((c) => field.set(c, value));
@@ -969,15 +987,66 @@ export function App(props: AppProps) {
   const pickerHeight = () => Math.max(8, Math.min(18, dims().height - 10));
 
   const showSettingsFilter = () => settingsFiltering() || settingsQuery() !== "";
-  const settingsHeight = () =>
-    Math.max(6, Math.min(FIELDS.length + 2 + (showSettingsFilter() ? 1 : 0), dims().height - 8));
+  /** Wide enough for the longest indented label, so values line up across sections. */
+  const SETTINGS_LABEL_WIDTH = Math.max(...FIELDS.map((f) => f.label.length + (f.group ? 2 : 0))) + 1;
+  /** A group subheading takes two lines (a blank line above it) unless it opens the visible window. */
+  const rowHeight = (r: SettingsRow, top: boolean) => (r.kind === "group" && !top ? 2 : 1);
+  const rowsHeight = (rows: SettingsRow[]) => rows.reduce((n, r, i) => n + rowHeight(r, i === 0), 0);
+  /** Sized for the tallest tab, so the dialog doesn't jump when switching tabs. */
+  const tallestTab = Math.max(...SECTIONS.map((sec) => rowsHeight(settingsRows(FIELDS.filter((f) => f.section === sec)))));
+  /** Borders, the tab bar and the blank line under it, and the filter line when shown. */
+  const settingsChrome = () => 4 + (showSettingsFilter() ? 1 : 0);
+  const settingsHeight = () => Math.max(10, Math.min(tallestTab + settingsChrome(), dims().height - 8));
 
-  /** The slice of settings that fits in the dialog, scrolled so the selection stays visible. */
-  const settingsWindow = () => {
-    const rows = settingsHeight() - 2 - (showSettingsFilter() ? 1 : 0);
-    const all = shownFields();
-    const start = Math.max(0, Math.min(fieldSel() - rows + 1, all.length - rows));
-    return all.slice(start, start + rows);
+  /** The subheadings and fields that fit in the dialog, scrolled so the selected field stays visible. */
+  const settingsWindow = (): SettingsRow[] => {
+    const space = settingsHeight() - settingsChrome();
+    const rows = settingsRows(shownFields());
+    const sel = Math.max(0, rows.findIndex((r) => r.kind === "field" && r.field === selectedField()));
+    const heightOf = (from: number, to: number) => rowsHeight(rows.slice(from, to + 1));
+    let start = 0;
+    while (start < sel && heightOf(start, sel) > space) start++;
+    let end = start;
+    while (end + 1 < rows.length && heightOf(start, end + 1) <= space) end++;
+    return rows.slice(start, end + 1);
+  };
+
+  const settingsFieldRow = (field: Field) => {
+    const selected = () => field === selectedField();
+    return (
+      <box flexDirection="row" height={1} flexShrink={0} backgroundColor={selected() ? theme().selectionBackground : undefined}>
+        <text fg={selected() ? undefined : theme().textMuted}>{pad((field.group ? "  " : "") + field.label, SETTINGS_LABEL_WIDTH)} </text>
+        <Show
+          when={editing() !== null && selected()}
+          fallback={
+            <Show when={field.kind === "enum"} fallback={<text>{pad(displayValue(field, config()!), modalWidth() - SETTINGS_LABEL_WIDTH - 5)}</text>}>
+              <For each={field.options ?? []}>
+                {(opt) => (
+                  <text
+                    fg={String(field.get(config()!)) === opt ? theme().modalBackground : theme().textMuted}
+                    bg={String(field.get(config()!)) === opt ? theme().accent : undefined}
+                    marginRight={1}
+                  >
+                    {` ${opt} `}
+                  </text>
+                )}
+              </For>
+              <Show when={selected()}>
+                <text fg={theme().textMuted}> ←→</text>
+              </Show>
+            </Show>
+          }
+        >
+          <input
+            value={editing()!}
+            focused
+            flexGrow={1}
+            onInput={(v) => (draft = v)}
+            onSubmit={(v) => void submitEdit(typeof v === "string" ? v : draft)}
+          />
+        </Show>
+      </box>
+    );
   };
 
   /** Rows of the repos view that fit inside its box (title border, summary line, bottom border). */
@@ -1137,12 +1206,18 @@ export function App(props: AppProps) {
       }
       case "settings":
         if (settingsFiltering())
-          return { title: "Settings · filter", hints: [hint("type", "to filter settings"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
+          return {
+            title: "Settings · filter",
+            hints: [hint("type", `to filter ${SECTIONS[settingsTab()]}`), hint("↑↓", "move"), hint("tab", "next tab"), hint("enter", "done"), hint("esc", "clear")],
+          };
         return {
           title: "Settings",
           hints: [
+            hint("tab", "next tab"),
+            hint("shift+tab", "previous tab"),
             hint("↑↓", "move"),
-            hint("enter", "edit/cycle"),
+            hint("enter", "edit"),
+            hint("←→", "change option"),
             ...(settingsQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")]),
             hint("e", "edit template"),
             hint("r", "reload"),
@@ -1418,7 +1493,7 @@ export function App(props: AppProps) {
             </Show>
             <Show when={repoView() && repoView()!.repos.length === 0}>
               <text fg={theme().textMuted}>
-                No git repositories found two levels under {repoView()!.roots.join(", ")}. Change "New watch: repo roots" in settings (s).
+                No git repositories found two levels under {repoView()!.roots.join(", ")}. Change Pull requests › New watch › Repo roots in settings (s).
               </text>
             </Show>
             <scrollbox ref={(el: ScrollBoxRenderable) => (repoScroll = el)} flexGrow={1} flexShrink={1} minHeight={0}>
@@ -1570,7 +1645,11 @@ export function App(props: AppProps) {
                         when={formEditing() !== null && formEditing() === field.key}
                         fallback={
                           <text fg={field.kind === "submit" ? theme().accent : field.kind === "fixed" ? theme().textMuted : undefined}>
-                            {field.kind === "submit" && submitting() ? "[ Working… ]" : displayField(field.key, form()!)}
+                            {field.kind === "submit" && submitting()
+                              ? "[ Working… ]"
+                              : field.kind === "enum" && i() === formSel()
+                                ? `‹ ${displayField(field.key, form()!)} ›`
+                                : displayField(field.key, form()!)}
                           </text>
                         }
                       >
@@ -1595,6 +1674,20 @@ export function App(props: AppProps) {
             <Match when={view() === "settings"}>
               <box flexDirection="column" border borderColor={theme().accent} title={` Settings · ${props.paths.config} `} backgroundColor={theme().modalBackground} width={modalWidth()} height={settingsHeight()} paddingLeft={1} paddingRight={1}>
                 <Show when={config()} fallback={<text fg={theme().error}>Config could not be loaded: {configError()}</text>}>
+                  <box flexDirection="row" height={1} flexShrink={0} marginBottom={1}>
+                    <For each={SECTIONS}>
+                      {(sec, i) => (
+                        <text
+                          fg={i() === settingsTab() ? theme().modalBackground : theme().textMuted}
+                          bg={i() === settingsTab() ? theme().accent : undefined}
+                          marginRight={1}
+                        >
+                          {` ${sec} `}
+                        </text>
+                      )}
+                    </For>
+                    <text fg={theme().textMuted}> tab / shift+tab</text>
+                  </box>
                   <Show when={showSettingsFilter()}>
                     <box flexDirection="row" height={1}>
                       <text fg={theme().accent}>/ </text>
@@ -1603,7 +1696,7 @@ export function App(props: AppProps) {
                           value={settingsQuery()}
                           focused
                           flexGrow={1}
-                          placeholder="filter settings by name"
+                          placeholder={`filter ${SECTIONS[settingsTab()]} by name`}
                           onInput={(v) => {
                             setSettingsQuery(v);
                             setFieldSel(0);
@@ -1613,23 +1706,20 @@ export function App(props: AppProps) {
                     </box>
                   </Show>
                   <Show when={shownFields().length === 0}>
-                    <text fg={theme().textMuted}>No settings match "{settingsQuery()}".</text>
+                    <text fg={theme().textMuted}>No {SECTIONS[settingsTab()]} settings match "{settingsQuery()}".</text>
                   </Show>
                   <For each={settingsWindow()}>
-                    {(field) => (
-                      <box flexDirection="row" height={1} backgroundColor={field === selectedField() ? theme().selectionBackground : undefined}>
-                        <text fg={theme().textMuted}>{pad(field.label, 38)} </text>
-                        <Show when={editing() !== null && field === selectedField()} fallback={<text>{pad(displayValue(field, config()!), modalWidth() - 44)}</text>}>
-                          <input
-                            value={editing()!}
-                            focused
-                            flexGrow={1}
-                            onInput={(v) => (draft = v)}
-                            onSubmit={(v) => void submitEdit(typeof v === "string" ? v : draft)}
-                          />
-                        </Show>
-                      </box>
-                    )}
+                    {(row, i) =>
+                      row.kind === "group" ? (
+                        <box height={1} marginTop={i() === 0 ? 0 : 1} flexShrink={0}>
+                          <text fg={theme().accent}>
+                            <b>{row.title}</b>
+                          </text>
+                        </box>
+                      ) : (
+                        settingsFieldRow(row.field)
+                      )
+                    }
                   </For>
                 </Show>
               </box>

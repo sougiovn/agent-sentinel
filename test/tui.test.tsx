@@ -27,11 +27,42 @@ test("TUI renders offline state and settings view, and saves an enum toggle", as
   const settings = t.captureCharFrame();
   expect(settings).toContain("Multiplexer");
   expect(settings).toContain("Busy timeout (min)");
+  expect(settings).toContain(" General   Pull requests   Tickets ");
+  expect(settings).toContain(" rex   herdr   ←→"); // every option shown, arrows on the selected row
+  expect(settings).not.toContain("Ignored authors"); // on the Pull requests tab
 
   t.mockInput.pressEnter(); // cycle multiplexer rex → herdr
   await Bun.sleep(100);
-  const r = loadConfig(paths.config);
+  let r = loadConfig(paths.config);
   expect(r.ok && r.config.multiplexer).toBe("herdr");
+
+  t.mockInput.pressArrow("left"); // back to rex
+  await Bun.sleep(100);
+  r = loadConfig(paths.config);
+  expect(r.ok && r.config.multiplexer).toBe("rex");
+  t.mockInput.pressArrow("right"); // wraps forward to herdr
+  await Bun.sleep(100);
+  r = loadConfig(paths.config);
+  expect(r.ok && r.config.multiplexer).toBe("herdr");
+
+  t.mockInput.pressTab();
+  await Bun.sleep(50);
+  await t.renderOnce();
+  let tab = t.captureCharFrame();
+  expect(tab).toContain("Ignored authors");
+  expect(tab).not.toContain("Multiplexer");
+
+  t.mockInput.pressTab({ shift: true });
+  t.mockInput.pressTab({ shift: true }); // wraps back to Tickets
+  t.mockInput.pressKey("/");
+  await Bun.sleep(50);
+  await t.mockInput.typeText("model"); // the filter only searches the current tab
+  await Bun.sleep(50);
+  await t.renderOnce();
+  tab = t.captureCharFrame();
+  expect(tab).toContain("Agent");
+  expect(tab).not.toContain("Evaluator");
+  expect(tab).not.toContain("Default model");
   t.renderer.destroy();
 });
 
@@ -291,6 +322,8 @@ test("TUI new-watch form: typed directory is validated, a remote mismatch needs 
   t.mockInput.pressEnter();
   let f = await frame();
   expect(f).toContain("not found, press enter to type a path");
+  expect(f).toContain("‹ default (agent decides) ›"); // the selected enum shows it can change
+  expect(f).not.toContain("‹ now ›");
 
   t.mockInput.pressArrow("down");
   t.mockInput.pressArrow("down"); // Directory
