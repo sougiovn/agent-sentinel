@@ -8,6 +8,7 @@ import { ensureHome, getPaths } from "../core/paths.ts";
 import type { AgentKind } from "../core/types.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
 import { Client, DaemonUnavailableError } from "./client.ts";
+import { bashCompletion, complete } from "./completion.ts";
 import { startDaemon, stopDaemon } from "./daemon-control.ts";
 import { detectAgent, hookSessionId } from "./detect.ts";
 import { formatList, formatStatus, formatTickets } from "./format.ts";
@@ -29,6 +30,7 @@ Usage:
   sentinel stop                 Stop the daemon
   sentinel restart              Restart the daemon (e.g. after upgrading Sentinel)
   sentinel reload               Reload config.json
+  sentinel completion bash      Print a bash completion script
   sentinel skill show|install   Print or install the agent skill
   sentinel daemon               Run the daemon in the foreground
 
@@ -177,6 +179,31 @@ async function main(argv: string[]) {
       if (sessionId && ["idle", "busy", "exit"].includes(signal)) {
         await client.call("signal", { sessionId, signal }, 5000).catch(() => {});
       }
+      return;
+    }
+    case "completion": {
+      if (rest[0] === "bash") {
+        process.stdout.write(bashCompletion);
+        return;
+      }
+      die("usage: sentinel completion bash");
+    }
+    case "__complete": {
+      // Called by the bash script, not by hand. Never fail the shell prompt.
+      const result = await complete(rest, {
+        watchedPrs: () =>
+          client
+            .call("list", {}, 1500)
+            .then((list) => list.map((pr) => pr.id))
+            .catch(() => []),
+        ticketKeys: () =>
+          client
+            .call("tickets", {}, 1500)
+            .then((list) => list.map((ticket) => ticket.key))
+            .catch(() => []),
+      });
+      const lines = result.dirs ? [...result.items, ":dir"] : result.items;
+      if (lines.length) process.stdout.write(`${lines.join("\n")}\n`);
       return;
     }
     case "skill": {

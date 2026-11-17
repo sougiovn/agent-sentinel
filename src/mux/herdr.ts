@@ -57,7 +57,7 @@ export class HerdrMux implements Multiplexer {
       byTab.set(p.tab_id, [...(byTab.get(p.tab_id) ?? []), p]);
     }
 
-    if (opts.layout === "sentinel-tab") {
+    if (opts.layout === "sentinel-tab" && !opts.ownTab) {
       for (const [tabId, ps] of byTab) {
         if (ps.length >= opts.maxPanesPerTab) continue;
         const anchor = ps[ps.length - 1]!;
@@ -87,7 +87,7 @@ export class HerdrMux implements Multiplexer {
       opts.cwd,
       "--label",
       tabName(opts, byTab.size),
-      "--no-focus",
+      ...(opts.focus ? [] : ["--no-focus"]),
     ]);
     return this.refFrom(out, opts.label, ws.workspace_id);
   }
@@ -99,6 +99,12 @@ export class HerdrMux implements Multiplexer {
     if (!paneId || !tabId) throw new Error("herdr did not return pane/tab ids");
     await this.run(["herdr", "pane", "rename", paneId, label]);
     return { paneId, tabId, homeId };
+  }
+
+  async focusPane(ref: PaneRef) {
+    await execOk(this.run, ["herdr", "workspace", "focus", ref.homeId]);
+    await execOk(this.run, ["herdr", "tab", "focus", ref.tabId]);
+    return undefined;
   }
 
   async sendLine(paneId: string, text: string) {

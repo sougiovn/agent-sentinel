@@ -45,7 +45,8 @@ export interface LaunchSpec {
   agent: AgentKind;
   sessionId: string;
   cwd: string;
-  promptFile: string;
+  /** First message for the agent; omitted to just open the session for the user. */
+  promptFile?: string;
   /** Start a session with this id instead of resuming one (claude only). */
   newSession?: boolean;
   model?: string | null;
@@ -68,7 +69,7 @@ function modelArgs(spec: LaunchSpec): string[] {
 
 /** Shell command line that starts or resumes the agent session with the prompt file's contents. */
 export function launchCommand(spec: LaunchSpec, config: Config, paths: Paths, self: string[]): string {
-  const prompt = `"$(cat ${sq(spec.promptFile)})"`;
+  const prompt = spec.promptFile ? [`"$(cat ${sq(spec.promptFile)})"`] : [];
   if (spec.agent === "claude") {
     const settings = writeClaudeHookSettings(paths, self);
     const a = config.agents.claude;
@@ -87,8 +88,7 @@ export function launchCommand(spec: LaunchSpec, config: Config, paths: Paths, se
       ...a.args.map(sq),
       // `--add-dir` (and possibly user args) take a variable number of values; without `--` the prompt
       // would be read as one more of them and Claude would start with no prompt.
-      "--",
-      prompt,
+      ...(prompt.length ? ["--", ...prompt] : []),
     ].join(" ");
   }
   if (spec.newSession) throw new Error("Sentinel can only start new sessions for claude");
@@ -103,7 +103,7 @@ export function launchCommand(spec: LaunchSpec, config: Config, paths: Paths, se
     ...modelArgs(spec).map(sq),
     ...a.args.map(sq),
     sq(spec.sessionId),
-    prompt,
+    ...prompt,
   ].join(" ");
 }
 

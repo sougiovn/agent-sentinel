@@ -140,6 +140,16 @@ Queued items wait in SQLite (`pending_items`) until their session can take them 
 - **Pause:** a paused session (TUI key `p`) keeps queueing but receives nothing until it's resumed. Resuming triggers a delivery attempt.
 - **Prompt:** items are grouped by PR, and each group is rendered with `fixPromptTemplate`, which supports `{{prUrl}}`, `{{reason}}` and `{{items}}`. Groups are joined with `---`. The default template asks the agent to fix, commit and push, to reply only to bot comments, and never to reply to or resolve human comments. The rendered prompt is saved to `~/.config/sentinel/prompts/<session>-<timestamp>.md`.
 
+### Going to the agent
+
+`A` (agent) on a PR or a Jira ticket takes you to its agent session, so you can talk to the agent in the right worktree:
+
+- If the agent is still running in its pane, Sentinel focuses that pane.
+- If the pane is there but the agent has exited, Sentinel resumes the agent in it, without a prompt.
+- If the pane is gone, Sentinel opens a new tab for it in its own session/workspace, named after the pane, resumes the agent there and focuses it.
+
+Rex also gets asked to show Sentinel's session (`rex do session.select`). That is a client action, so it only works with Remote Control on and one Rex app open. When it fails, the pane is still focused inside Sentinel's session, and the TUI shows why. A session Sentinel hasn't started yet (its first prompt is still queued) can't be gone to yet.
+
 ### Panes
 
 Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). herdr-core (`hc`) has neither: there, Sentinel owns the terminals that carry its label (see the last bullet). Each agent session gets one pane, named after the work it handles: the Jira ticket key (`CP-7713`), or the repo and number of each PR it watches (`web#42`, comma-separated if there are several). A session with neither falls back to `<agent>:<first 8 chars of session ID>`. The pane's ID is stored so it can be reused, and the name is set once, when the pane is created.
@@ -222,7 +232,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - The daemon is independent of the dashboard: quitting the TUI leaves it running.
 - `sentinel daemon` runs it in the foreground and logs to stderr as well as `sentinel.log`. Startup failures are written to the log too.
 - **Single instance:** a second daemon refuses to start while one is answering on the socket. A leftover socket file from a crashed daemon is removed on start.
-- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
+- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`, `myPrs`, `newWatchDefaults`, `suggestCwd`, `validateCwd`, `repos`. `repos` returns the [repos view](#repos-view): the configured roots and each repo's worktrees with the PR ids and ticket keys tied to them. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
 - **Stopping:** `sentinel stop` asks the daemon to exit; if it doesn't answer, Sentinel sends `SIGTERM` to the PID in `sentinel.pid`. `SIGINT` and `SIGTERM` shut it down cleanly, removing the socket and pidfile. It waits up to 5 seconds for the daemon to stop answering.
 - **Restarting:** `sentinel restart` stops the daemon the same way, then starts a new one in the background (or just starts one if none was running). Use it after upgrading Sentinel, since a daemon started from the old build keeps running until it's stopped.
 - Prompt files older than 7 days are deleted after each poll.
@@ -246,6 +256,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel restart` | Stop the daemon and start it again |
 | `sentinel skill show` | Print the agent skill |
 | `sentinel skill install` | Install the skill to `~/.claude/skills/sentinel/` and `~/.codex/skills/sentinel/` |
+| `sentinel completion bash` | Print a bash completion script |
 | `sentinel daemon [--quiet]` | Run the daemon in the foreground |
 | `sentinel hook idle\|busy\|exit` | Used by agent hooks; not meant to be run by hand |
 
@@ -266,20 +277,45 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `/` | Filter watched PRs: every word must appear in the PR's `org/repo` or title. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `Enter` | Event history for the PR |
 | `n` / `w` | Watch one of your PRs with a new Claude session (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)) |
+| `g` | Repos and worktrees (see [Repos view](#repos-view)) |
 | `o` | Open the selected PR in the browser (`open`, or `xdg-open` on Linux) |
 | `c` | Check the selected PR now |
 | `r` | Refresh all watched PRs now and restart the poll countdown (single-flight, 30s cooldown) |
 | `d`, then `y` | Unwatch the selected PR |
 | `p` | Pause or resume deliveries to the PR's agent session |
-| `t` | Move the selection between the PR list and the Jira tickets list. With a ticket selected: `↑/↓` move, `o` opens it in the browser, `d` dismisses it (asks first), `p` pauses or resumes its session, `t`/`Esc` go back to PRs |
+| `A` | Go to the PR's agent session (see [Going to the agent](#going-to-the-agent)) |
+| `t` | Move the selection between the PR list and the Jira tickets list. With a ticket selected: `↑/↓` move, `o` opens it in the browser, `A` goes to its agent, `d` dismisses it (asks first), `p` pauses or resumes its session, `t`/`Esc` go back to PRs |
 | `s` | Settings |
-| `R` | Reload config in the TUI and the daemon |
+| `R` | Reload config and theme in the TUI and the daemon |
 | `S` | Retry starting the daemon (when it's offline) |
+| `?` | Show or hide every shortcut for the current screen |
 | `q` / `Ctrl+C` | Quit |
 
+- **Footer and `?`:** the footer lists the current screen's shortcuts, most used first, and keeps as many whole ones as fit the terminal width; a `…` marks the ones left out. `? help` is always shown at the right. `?` opens a dialog listing all of the current screen's shortcuts, plus the two that work everywhere (`?` and `Ctrl+C`). It works on every screen, including while a filter input or a value being edited has focus, so `?` can't be typed into those inputs. While the dialog is open other keys are ignored; `Esc`, `?` or `Enter` close it, and `↑`/`↓` scroll it when it doesn't fit. `/` filters the list: every word must appear in a shortcut's key or action. While typing, `Enter` keeps the filter and `Esc` clears it; with a filter kept, `Esc` clears it first and a second `Esc` closes the dialog. A filter input open under the dialog keeps its text and focus. A pending unwatch or dismiss confirmation is cancelled when `?` is pressed. Messages such as "Saved" replace the footer hints for 5 seconds but leave `? help` in place.
 - **Daemon offline:** while the daemon is starting, the TUI shows "Starting Sentinel daemon…". If it fails to start or stops later, the TUI shows the error and offers `S` to try again.
 - **Config errors:** an invalid config file, or a daemon running on its last good config, is shown in a red banner.
 - **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`.
+
+### Repos view
+
+`g` lists every git repo under `newWatch.repoRoots` with all of its worktrees, and shows which watched PRs and Jira tickets belong to each worktree.
+
+- **Repos:** main checkouts found two levels deep under each root, sorted by path. A directory that is itself a linked worktree (its `.git` is a file) isn't listed as a repo; it appears under its repo instead. Worktrees are listed even when they live outside the roots (for example `~/.codex/worktrees/…` or `~/.gitbutler-worktrees/…`). The heading shows `owner/repo` from `origin` (with the host for GitHub Enterprise), or the directory name when there is no `origin`.
+- **Worktrees:** from `git worktree list --porcelain`, main checkout first. Each line shows the branch (or `detached <sha>`), the path, and tags for the main checkout, a locked worktree, and one whose directory is gone (`missing (prunable)`). If git can't list a repo's worktrees, its error is shown under the heading.
+- **PRs:** a watched PR is listed under the worktree that contains its directory. When worktrees are nested (a `.claude/worktrees/…` inside the main checkout), the deepest one wins.
+- **Jira tickets:** a ticket is listed under the worktree of the PR its session handed off, and under every worktree whose branch or directory name contains the ticket key as a whole token (`CP-123-fix`, `feat/CP-123` and `giovane/cp-123/x` match `CP-123`; `CP-1234` doesn't). If neither applies, it goes under the worktree containing its session's directory. Dismissed tickets aren't shown.
+- **Status:** PR and ticket lines show their current status and session, and update with the 2-second refresh. The worktree scan itself runs only when the view opens and on `r`, because it runs git once per repo.
+- **Summary line:** repo and worktree counts, how many worktrees have a watched PR or ticket, and how many are shown while a filter is on.
+- The list scrolls inside its box and keeps the selected worktree, its PRs and tickets, and (for a repo's first worktree) the repo heading in view.
+
+| Key | Action |
+| --- | --- |
+| `↑`/`↓` or `k`/`j` | Select a worktree |
+| `/` | Filter: every word must appear in the repo name or path, the branch, the worktree path, or a linked PR (`#number`, title, status) or ticket (key, summary, status). Only matching worktrees are shown, and repos with none are hidden. `Enter` keeps the filter and returns to the list, `Esc` clears it |
+| `o` | Open the selected worktree's first PR in the browser, or its first ticket when it has no PR |
+| `r` | Rescan the repo roots; the selection stays on the same worktree |
+| `?` | Show or hide this view's shortcuts |
+| `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
 **Settings** open in a dialog over the PR list. Every config field is listed with its current value, one line each (long values are cut short), and the list scrolls to keep the selection visible.
 
@@ -290,7 +326,8 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `Esc` (while editing) | Cancel |
 | `/` | Filter settings by name: every word must appear in the label or config key. `Enter` keeps the filter and returns to the list, `Esc` clears it |
 | `e` | Open the selected template (`fixPromptTemplate`, `introPromptTemplate`) in `$VISUAL` or `$EDITOR` (default `vi`) |
-| `r` | Reload config (inside settings; the main view uses `R` for this) |
+| `r` | Reload config and theme (inside settings; the main view uses `R` for this) |
+| `?` | Show or hide the settings shortcuts (also while a value is being edited) |
 | `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
 - Lists (ignored authors, failing conclusions, agent args) are edited as comma-separated text.
@@ -320,7 +357,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `fixPromptTemplate` | built-in | Placeholders `{{prUrl}}`, `{{reason}}`, `{{items}}` |
 | `introPromptTemplate` | built-in | First prompt for a TUI-started session with nothing to fix. Placeholders `{{prUrl}}`, `{{title}}`, `{{repo}}`, `{{number}}`, `{{cwd}}` |
 | `newWatch.onlyMine` | `true` | PR picker lists only PRs you authored; `false` = any open PR involving you |
-| `newWatch.repoRoots` | `["~/work"]` | Scanned two levels deep for local clones |
+| `newWatch.repoRoots` | `["~/work"]` | Scanned two levels deep for local clones, and listed in the [repos view](#repos-view) |
 | `newWatch.model` / `.models` | `"default"` / `default, opus, sonnet, haiku` | Default and choices for the form; `default` omits `--model` |
 | `newWatch.effort` / `.efforts` | `"default"` / `default, low, medium, high, xhigh, max` | Default and choices for the form; `default` omits `--effort` |
 | `newWatch.startNow` | `true` | Form default for "Start session" |
@@ -342,6 +379,32 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - An invalid file (bad JSON or a value that fails validation) is logged, reported in `status` and the TUI, and the daemon keeps running on the last good config.
 - A new poll interval takes effect immediately. Other settings apply from the next poll or delivery.
 
+### Theme
+
+The dashboard's colours live in a separate `~/.config/sentinel/theme.json` (`src/tui/theme.ts`), created with the defaults when the dashboard first runs. It holds colours only. Every key is optional, so a partial file is valid; missing keys keep their defaults, and `statuses` is merged with the default status colours.
+
+| Key | Default | Used for |
+| --- | --- | --- |
+| `text` | `#ecf0f1` | Default text and statuses with no colour |
+| `textSecondary` | `#bdc3c7` | PR titles, reasons and event details |
+| `textMuted` | `#7f8c8d` | Hints, field labels, table headers and the footer |
+| `accent` | `#2ecc71` | Title, focused borders and other highlights |
+| `info` | `#3498db` | Repo group headings, timestamps and `watched` markers |
+| `success` | `#2ecc71` | Success messages |
+| `warning` | `#e67e22` | Warnings, like the daemon being offline |
+| `error` | `#e74c3c` | Errors and invalid config |
+| `pending` | `#f1c40f` | Work-in-progress messages |
+| `selectionBackground` | `#2c3e50` | Background of the selected row |
+| `modalBackground` | `#1e272e` | Background of the floating dialogs |
+| `statuses.<status>` | see below | Colour of that status in the PR and ticket lists |
+
+Statuses default to `no_changes` `#7f8c8d`, `no_action` `#95a5a6`, `pending` `#7f8c8d`, `fix_spawned` `#3498db`, `fix_running` `#f1c40f`, `spawn_failed` `#e74c3c`, `error` `#e74c3c`, `queued` `#3498db`, `started` `#f1c40f`, `in_review` `#2ecc71` and `transition_failed` `#e67e22`. An unknown status uses `text`.
+
+- Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `transparent`.
+- The TUI watches the file and applies a change about 200 ms after it is saved. `R` (or `r` inside settings) reloads it on demand.
+- Invalid JSON or a colour that fails validation shows a banner and keeps the last good theme. Unknown keys are rejected, so typos don't pass silently.
+- Deleting the file resets the running TUI to the defaults; it is created again with the defaults on the next launch.
+
 ## Data on disk
 
 Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
@@ -349,6 +412,7 @@ Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
 | Path | Contents |
 | --- | --- |
 | `config.json` | Settings |
+| `theme.json` | Dashboard colours (created with the defaults when the dashboard first runs) |
 | `sentinel.db` | SQLite database (WAL mode) |
 | `sentinel.sock` | Daemon socket |
 | `sentinel.pid` | Daemon PID |
@@ -377,7 +441,11 @@ The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sen
 
 ## Verification status and known limits
 
-Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, and starting the daemon.
+Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, theme parsing (defaults, partial files, status merge, invalid colours and unknown keys), database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, the repos view data (parsing `git worktree list --porcelain`, listing main checkouts but not linked worktrees, tying PRs to the deepest worktree and tickets by handed-off PR, key in the branch or directory name, then session directory, a repo whose worktrees can't be listed, roots that don't exist), new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, a custom theme and its live reload (including an invalid edit keeping the last good theme), and starting the daemon.
+
+TUI tests also cover the repos view: worktrees with their PR and ticket, opening them, the `/` filter, scrolling in a short terminal with the footer kept visible, `r` rescanning with the selection kept on the same worktree, the empty-roots message, and refusing to open while the daemon is offline.
+
+The footer and `?` dialog are tested for: `? help` kept visible while the other hints are truncated with `…` in a narrow terminal; the dialog listing every shortcut, titled for the main view, settings, the repos view and a value being edited; its `/` filter, with keys like `q` typed as text and a PR filter underneath keeping its focus; other keys ignored while it's open; opening from a focused filter input or a value being edited without typing `?` into it; a pending unwatch cancelled by `?`; and `? help` staying next to a "Saved" message. The hint fitting and filtering functions have unit tests.
 
 Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), the herdr-core adapter against `hc` 0.1.20 (terminal creation, labels, working directory, typing a quoted line, detecting a finished terminal), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 
@@ -394,6 +462,7 @@ Not verified yet:
 
 Known limits:
 - **Jira:** the Jira timer only runs in a started daemon, so its scheduling (first poll after 5s, rescheduling when `jira.enabled` or the interval changes) isn't covered by tests. Tickets have no event history (`enter` does nothing on a ticket); look at `sentinel.log`. A ticket that leaves the query while it is still `queued` isn't started until it matches again. Deleting a ticket's row (with the daemon stopped) is the only way to have Sentinel pick it up a second time.
+- **Repos view:** a watched PR is tied to a worktree by its session's directory, not by its branch, so a PR whose session works in the main checkout shows there even when its branch is checked out in another worktree. Worktree changes made while the view is open appear after `r`.
 - The watched-PR table doesn't scroll; with more PRs than fit, the bottom ones are hidden (use `/` to filter).
 - If a session's busy timeout expires after its agent exited without an `exit` signal (always the case for Codex, which has no `exit` hook), the pointer line is typed into a bare shell instead of the agent.
 - Agent args that contain commas can't be edited in the TUI; edit `config.json` instead.

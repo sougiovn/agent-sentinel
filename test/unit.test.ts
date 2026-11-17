@@ -14,6 +14,7 @@ import { newItems, normalize } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq, writeClaudeHookSettings } from "../src/spawn/launcher.ts";
 import { getPaths } from "../src/core/paths.ts";
 import { cycleEnum, FIELDS, filterFields, parseValue } from "../src/tui/settings.ts";
+import { DEFAULT_THEME, loadTheme, parseTheme, saveTheme, statusColor } from "../src/tui/theme.ts";
 import { fakeGit } from "./fakes.ts";
 import type { Exec } from "../src/core/exec.ts";
 import { Store } from "../src/core/db.ts";
@@ -22,6 +23,9 @@ import { HcMux } from "../src/mux/hc.ts";
 import { MuxUnavailableError, type CreatePaneOptions } from "../src/mux/mux.ts";
 import { GhCli } from "../src/github/gh.ts";
 import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
+import { linkWorktrees, listRepos, namesTicket, parseWorktreeList } from "../src/core/worktrees.ts";
+import { filterRepos, tilde } from "../src/tui/repo-labels.ts";
+import { filterHints, fitHints } from "../src/tui/shortcuts.ts";
 import type { MyPr } from "../src/daemon/protocol.ts";
 import { filterPrs, filterWatched } from "../src/tui/pr-filter.ts";
 
@@ -73,6 +77,42 @@ describe("config", () => {
     expect(r.ok && r.config.pollIntervalSec).toBe(60);
     writeFileSync(p, "{bad");
     expect(loadConfig(p).ok).toBe(false);
+  });
+});
+
+describe("theme", () => {
+  test("load creates a full default theme file", () => {
+    const p = join(mkdtempSync(join(tmpdir(), "theme-")), "theme.json");
+    const r = loadTheme(p);
+    expect(r.ok && r.theme.accent).toBe("#2ecc71");
+    const saved = JSON.parse(readFileSync(p, "utf8"));
+    expect(saved.text).toBe("#ecf0f1");
+    expect(saved.selectionBackground).toBe("#2c3e50");
+    expect(saved.statuses.in_review).toBe("#2ecc71");
+  });
+  test("partial theme falls back to defaults and merges status colours", () => {
+    const r = parseTheme(JSON.stringify({ accent: "#ff00ff", statuses: { in_review: "#123456" } }));
+    expect(r.ok && r.theme.accent).toBe("#ff00ff");
+    expect(r.ok && r.theme.text).toBe(DEFAULT_THEME.text);
+    expect(r.ok && r.theme.statuses.in_review).toBe("#123456");
+    expect(r.ok && r.theme.statuses.error).toBe("#e74c3c");
+  });
+  test("invalid colours and unknown keys are reported", () => {
+    expect(parseTheme("{nope").ok).toBe(false);
+    expect(parseTheme(JSON.stringify({ accent: "not a colour" })).ok).toBe(false);
+    expect(parseTheme(JSON.stringify({ accent: "#ff00ff", accentt: "#ffffff" })).ok).toBe(false);
+  });
+  test("status colours fall back to the text colour", () => {
+    expect(statusColor(DEFAULT_THEME, "in_review")).toBe("#2ecc71");
+    expect(statusColor(DEFAULT_THEME, "unknown")).toBe(DEFAULT_THEME.text);
+    expect(statusColor({ ...DEFAULT_THEME, statuses: {} }, "in_review")).toBe(DEFAULT_THEME.text);
+  });
+  test("save round-trips and rejects invalid values", () => {
+    const p = join(mkdtempSync(join(tmpdir(), "theme-")), "theme.json");
+    saveTheme(p, { ...DEFAULT_THEME, accent: "red" });
+    const r = loadTheme(p);
+    expect(r.ok && r.theme.accent).toBe("red");
+    expect(() => saveTheme(p, { ...DEFAULT_THEME, accent: "nope!" })).toThrow();
   });
 });
 
@@ -134,6 +174,14 @@ describe("launcher", () => {
   test("claude prompt is never swallowed by the variadic --add-dir", () => {
     const cmd = launchCommand({ agent: "claude", sessionId: "s-1", cwd: "/w", promptFile: "/p/f.md", newSession: true }, defaultConfig(), paths, ["/bin/sentinel"]);
     expect(cmd).toMatch(/--add-dir '[^']+' -- "\$\(cat '\/p\/f\.md'\)"$/);
+  });
+  test("without a prompt file the agent just opens the session", () => {
+    const claude = launchCommand({ agent: "claude", sessionId: "s-1", cwd: "/w" }, defaultConfig(), paths, ["/bin/sentinel"]);
+    expect(claude).toStartWith(`cd '/w' && 'claude' --resume 's-1' `);
+    expect(claude).not.toContain(" -- ");
+    expect(claude).not.toContain("$(cat");
+    const codex = launchCommand({ agent: "codex", sessionId: "t-1", cwd: "/w" }, defaultConfig(), paths, ["/bin/sentinel"]);
+    expect(codex).toEndWith(`'t-1'`);
   });
   test("codex launch command", () => {
     const cmd = launchCommand({ agent: "codex", sessionId: "t-1", cwd: "/w", promptFile: "/p/f.md" }, defaultConfig(), paths, ["/bin/sentinel"]);
@@ -552,6 +600,35 @@ describe("rex mux", () => {
     expect(shared.calls).toContainEqual(["rex", "block", "rename", "block:3", "CP-1"]);
   });
 
+  test("ownTab opens a focused tab named after the pane even in the shared layout", async () => {
+    const rex = fakeRex();
+    const mux = new RexMux(rex.exec);
+    const first = await mux.createPane(opts());
+    const own = await mux.createPane(opts({ homeId: first.homeId, label: "CP-9", ownTab: true, focus: true }));
+    expect(own.tabId).not.toBe(first.tabId);
+    expect(rex.calls.some((c) => c[1] === "split")).toBe(false);
+    const win = rex.calls.find((c) => c[1] === "window" && c[2] === "new")!;
+    expect(win[5]).toBe("CP-9");
+    expect(win).toContain("--focus=true");
+    await mux.createPane(opts({ homeId: first.homeId, layout: "tab-per-session" }));
+    expect(rex.calls.filter((c) => c[1] === "window" && c[2] === "new").at(-1)).toContain("--focus=false");
+  });
+
+  test("focusPane focuses the block and asks the app to show its session", async () => {
+    const rex = fakeRex();
+    const mux = new RexMux(rex.exec);
+    expect(await mux.focusPane({ paneId: "block:7", tabId: "window:6", homeId: "session:5" })).toBeUndefined();
+    expect(rex.calls).toEqual([
+      ["rex", "focus", "-s", "session:5", "block:7"],
+      ["rex", "do", "session.select", "session_id=session:5", "window_id=window:6"],
+    ]);
+
+    const refusing: Exec = async (cmd) =>
+      cmd[2] === "session.select" ? { code: 1, stdout: "", stderr: "Remote Control is off" } : { code: 0, stdout: "{}", stderr: "" };
+    const warning = await new RexMux(refusing).focusPane({ paneId: "block:7", tabId: "window:6", homeId: "session:5" });
+    expect(warning).toContain("Remote Control is off");
+  });
+
   test("falls back to the label when the stored session is gone", async () => {
     const rex = fakeRex();
     const mux = new RexMux(rex.exec);
@@ -658,5 +735,129 @@ describe("rex naming note", () => {
     expect(rexNamingNote("sentinel-tab")).toContain("shared with other agents");
     expect(rexNamingNote("tab-per-session")).toContain("named this tab after your ticket or PR");
     for (const l of ["sentinel-tab", "tab-per-session"] as const) expect(rexNamingNote(l)).toContain("no `rex window rename`");
+  });
+});
+
+describe("worktrees", () => {
+  test("parses git worktree list --porcelain", () => {
+    const out = [
+      "worktree /w/web",
+      "HEAD aaaa",
+      "branch refs/heads/main",
+      "",
+      "worktree /w/web/.claude/worktrees/CP-7-fix",
+      "HEAD bbbb",
+      "branch refs/heads/feat/CP-7-fix",
+      "locked",
+      "",
+      "worktree /gone",
+      "HEAD cccc",
+      "detached",
+      "prunable gitdir file points to non-existent location",
+      "",
+    ].join("\n");
+    const list = parseWorktreeList(out);
+    expect(list.map((w) => [w.path, w.branch, w.detached, w.locked, w.prunable])).toEqual([
+      ["/w/web", "main", false, false, false],
+      ["/w/web/.claude/worktrees/CP-7-fix", "feat/CP-7-fix", false, true, false],
+      ["/gone", null, true, false, true],
+    ]);
+  });
+
+  test("matches a ticket key as a whole token", () => {
+    expect(namesTicket("CP-7-fix-login", "CP-7")).toBe(true);
+    expect(namesTicket("feat/cp-7", "CP-7")).toBe(true);
+    expect(namesTicket("CP-70-other", "CP-7")).toBe(false);
+    expect(namesTicket("XCP-7", "CP-7")).toBe(false);
+  });
+
+  test("links PRs to the deepest worktree and tickets by PR, name, then cwd", () => {
+    const wts = [
+      { path: "/w/web", branch: "main" },
+      { path: "/w/web/.claude/worktrees/a", branch: "CP-7-fix" },
+      { path: "/w/web/.claude/worktrees/b", branch: "other" },
+    ];
+    const links = linkWorktrees(
+      wts,
+      [
+        { id: "pr-main", cwd: "/w/web" },
+        { id: "pr-b", cwd: "/w/web/.claude/worktrees/b/sub" },
+        { id: "pr-elsewhere", cwd: "/x" },
+      ],
+      [
+        { key: "CP-7", cwd: "/w", pr_id: null },
+        { key: "CP-8", cwd: "/w", pr_id: "pr-b" },
+        { key: "CP-9", cwd: "/w/web", pr_id: null },
+        { key: "CP-10", cwd: "/w", pr_id: null },
+      ],
+    );
+    expect(links.get("/w/web")).toEqual({ prs: ["pr-main"], tickets: ["CP-9"] });
+    expect(links.get("/w/web/.claude/worktrees/a")).toEqual({ prs: [], tickets: ["CP-7"] });
+    expect(links.get("/w/web/.claude/worktrees/b")).toEqual({ prs: ["pr-b"], tickets: ["CP-8"] });
+  });
+
+  test("lists main checkouts under the roots, not linked worktrees", async () => {
+    const root = mkdtempSync(join(tmpdir(), "roots-"));
+    mkdirSync(join(root, "web", ".git"), { recursive: true });
+    mkdirSync(join(root, "web-wt"), { recursive: true });
+    writeFileSync(join(root, "web-wt", ".git"), "gitdir: ../web/.git/worktrees/web-wt\n");
+    const web = join(root, "web");
+    const repos = await listRepos(
+      fakeGit({ [web]: "git@github.com:acme/web.git" }, { [web]: `worktree ${web}\nbranch refs/heads/main\n\nworktree ${join(root, "web-wt")}\nbranch refs/heads/x\n` }),
+      [root],
+    );
+    expect(repos.map((r) => [r.path, r.remote, r.worktrees.map((w) => w.branch)])).toEqual([[web, "github.com/acme/web", ["main", "x"]]]);
+  });
+
+  test("shortens paths under home", () => {
+    expect(tilde("/home/me/work/web", "/home/me")).toBe("~/work/web");
+    expect(tilde("/homeless", "/home")).toBe("/homeless");
+  });
+});
+
+describe("repo filter", () => {
+  const wt = (path: string, branch: string, extra: { prs?: string[]; tickets?: string[] } = {}) => ({
+    path, branch, head: "abc", main: false, locked: false, prunable: false, prs: extra.prs ?? [], tickets: extra.tickets ?? [],
+  });
+  const repos = [
+    { path: "/w/web", root: "/w", remote: "github.com/acme/web", worktrees: [wt("/w/web", "main"), wt("/w/wt/a", "CP-7-fix", { prs: ["p1"] })] },
+    { path: "/w/api", root: "/w", remote: "github.com/acme/api", worktrees: [wt("/w/api", "main", { tickets: ["CP-9"] })] },
+    { path: "/w/broken", root: "/w", remote: null, worktrees: [], error: "boom" },
+  ];
+  const links = { pr: (id: string) => (id === "p1" ? "#12 - Fix login redirect no_changes" : id), ticket: (k: string) => `${k} Rate limits` };
+  const show = (q: string) => filterRepos(repos, q, links).map((r) => [r.path, r.worktrees.map((w) => w.branch)]);
+
+  test("matches repo, branch, PR and ticket text, keeping only matching worktrees", () => {
+    expect(show("")).toHaveLength(3);
+    expect(show("web")).toEqual([["/w/web", ["main", "CP-7-fix"]]]);
+    expect(show("cp-7")).toEqual([["/w/web", ["CP-7-fix"]]]);
+    expect(show("login")).toEqual([["/w/web", ["CP-7-fix"]]]);
+    expect(show("rate limits")).toEqual([["/w/api", ["main"]]]);
+    expect(show("main api")).toEqual([["/w/api", ["main"]]]);
+    expect(show("broken")).toEqual([["/w/broken", []]]);
+    expect(show("nothing")).toEqual([]);
+  });
+});
+
+describe("footer hints", () => {
+  const hints = [
+    { key: "↑↓", label: "move" },
+    { key: "/", label: "filter" },
+    { key: "q", label: "quit" },
+  ];
+  test("keeps whole hints that fit and marks the rest with …", () => {
+    expect(fitHints(hints, 100)).toBe("↑↓ move · / filter · q quit");
+    expect(fitHints(hints, "↑↓ move · / filter · q quit".length)).toBe("↑↓ move · / filter · q quit");
+    expect(fitHints(hints, 24)).toBe("↑↓ move · / filter · …");
+    expect(fitHints(hints, 12)).toBe("↑↓ move · …");
+    expect(fitHints(hints, 5)).toBe("…");
+    expect(fitHints(hints, 0)).toBe("");
+  });
+
+  test("filters by key or label, every word must match", () => {
+    expect(filterHints(hints, "").map((h) => h.key)).toEqual(["↑↓", "/", "q"]);
+    expect(filterHints(hints, "QUIT").map((h) => h.key)).toEqual(["q"]);
+    expect(filterHints(hints, "/").map((h) => h.key)).toEqual(["/"]);
+    expect(filterHints(hints, "move quit")).toEqual([]);
   });
 });

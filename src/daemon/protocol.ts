@@ -1,6 +1,7 @@
 import type { EventRow, PrRow, SessionRow, TicketRow } from "../core/types.ts";
 import type { WatchRequest, WatchResult } from "./sentinel.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
+import type { GoToAgentResult } from "../spawn/dispatcher.ts";
 
 export interface StatusInfo {
   pid: number;
@@ -64,6 +65,37 @@ export interface CwdCheck {
   warning?: string;
 }
 
+export interface WorktreeEntry {
+  path: string;
+  /** Short branch name; null when detached. */
+  branch: string | null;
+  head: string | null;
+  /** The repo's main checkout. */
+  main: boolean;
+  locked: boolean;
+  /** Its directory is gone; `git worktree prune` would remove it. */
+  prunable: boolean;
+  /** Watched PR ids whose session works here. */
+  prs: string[];
+  /** Jira ticket keys tied to this worktree. */
+  tickets: string[];
+}
+
+export interface RepoEntry {
+  path: string;
+  root: string;
+  /** `host/owner/repo` from `origin`, or null. */
+  remote: string | null;
+  worktrees: WorktreeEntry[];
+  error?: string;
+}
+
+/** Local repos under the configured repo roots, with their worktrees. */
+export interface RepoView {
+  roots: string[];
+  repos: RepoEntry[];
+}
+
 /** Result of a manual, full poll triggered from the TUI. */
 export interface RefreshResult {
   /** False when a poll was already running or the manual-refresh cooldown is active. */
@@ -89,6 +121,7 @@ export interface RpcMethods {
   newWatchDefaults: [Record<string, never>, NewWatchDefaults];
   suggestCwd: [{ pr: string }, { path: string | null }];
   validateCwd: [{ pr: string; path: string }, CwdCheck];
+  repos: [Record<string, never>, RepoView];
   unwatch: [{ pr: string }, { removed: boolean }];
   check: [{ pr?: string }, { checked: string[] }];
   refresh: [Record<string, never>, RefreshResult];
@@ -98,6 +131,7 @@ export interface RpcMethods {
   history: [{ pr: string }, EventRow[]];
   signal: [{ sessionId: string; signal: HookSignal }, { known: boolean }];
   pause: [{ sessionId: string; paused: boolean }, { ok: true }];
+  goToAgent: [{ sessionId: string }, GoToAgentResult];
   reload: [Record<string, never>, { ok: boolean; error: string | null }];
   stop: [Record<string, never>, { ok: true }];
 }
