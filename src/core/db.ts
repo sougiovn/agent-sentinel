@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import type { AgentKind, EventRow, Item, PrRow, PrStatus, SessionOptions, SessionRow, TicketRow, TicketStatus } from "./types.ts";
+import type { AgentKind, EventRow, HumanCommentRow, Item, PrRow, PrStatus, SessionOptions, SessionRow, TicketRow, TicketStatus } from "./types.ts";
 
 const MIGRATIONS: string[] = [
   `
@@ -74,6 +74,31 @@ const MIGRATIONS: string[] = [
   `,
   `
   ALTER TABLE tickets ADD COLUMN pr_id TEXT;
+  `,
+  `
+  CREATE TABLE human_comments (
+    pr_id TEXT NOT NULL REFERENCES prs(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    author TEXT,
+    body TEXT NOT NULL,
+    url TEXT,
+    path TEXT,
+    line INTEGER,
+    created_at TEXT,
+    first_seen_at INTEGER NOT NULL,
+    gh_resolved INTEGER NOT NULL DEFAULT 0,
+    resolved_at INTEGER,
+    delivered_at INTEGER,
+    delivered_session TEXT,
+    draft_requested_at INTEGER,
+    draft_summary TEXT,
+    draft_change TEXT,
+    draft_reply TEXT,
+    draft_at INTEGER,
+    draft_by TEXT,
+    PRIMARY KEY (pr_id, item_id)
+  );
   `,
 ];
 
@@ -313,6 +338,124 @@ export class Store {
   /** Hides a ticket from the dashboard. The row stays, so Sentinel still won't pick the ticket up again. */
   dismissTicket(key: string): boolean {
     return this.db.query("UPDATE tickets SET dismissed = 1 WHERE key = $k").run({ k: key }).changes > 0;
+  }
+
+  // ---- human comments ----
+
+  /**
+   * Makes the PR's human comments match GitHub: adds new ones, refreshes body and thread resolution,
+   * and drops deleted ones. Local state (drafts, the user's resolution) is kept.
+   */
+  syncHumanComments(prId: string, items: Item[], resolvedIds: Set<string>, now: number) {
+    const upsert = this.db.query(
+      `INSERT INTO human_comments (pr_id, item_id, kind, author, body, url, path, line, created_at, first_seen_at, gh_resolved)
+       VALUES ($p, $i, $k, $a, $b, $u, $path, $line, $c, $now, $r)
+       ON CONFLICT(pr_id, item_id) DO UPDATE SET body = $b, url = $u, path = $path, line = $line, gh_resolved = $r`,
+    );
+    const remove = this.db.query("DELETE FROM human_comments WHERE pr_id = $p AND item_id = $i");
+    const keep = new Set(items.map((i) => i.id));
+    this.db.transaction(() => {
+      for (const it of items) {
+        if (it.kind === "check") continue;
+        upsert.run({
+          p: prId,
+          i: it.id,
+          k: it.kind,
+          a: it.author ?? null,
+          b: it.body ?? "",
+          u: it.url ?? null,
+          path: it.path ?? null,
+          line: it.line ?? null,
+          c: it.createdAt ?? null,
+          now,
+          r: resolvedIds.has(it.id) ? 1 : 0,
+        });
+      }
+      for (const row of this.humanComments(prId)) if (!keep.has(row.item_id)) remove.run({ p: prId, i: row.item_id });
+    })();
+  }
+
+  humanComments(prId: string): HumanCommentRow[] {
+    return this.db
+      .query<HumanCommentRow, { p: string }>(
+        "SELECT * FROM human_comments WHERE pr_id = $p ORDER BY created_at, first_seen_at, item_id",
+      )
+      .all({ p: prId });
+  }
+
+  getHumanComment(prId: string, itemId: string): HumanCommentRow | null {
+    return this.db
+      .query<HumanCommentRow, { p: string; i: string }>("SELECT * FROM human_comments WHERE pr_id = $p AND item_id = $i")
+      .get({ p: prId, i: itemId });
+  }
+
+  /** Number of open human comments per PR id; PRs with none are absent. */
+  openHumanCounts(): Map<string, number> {
+    const rows = this.db
+      .query<{ pr_id: string; n: number }, []>(
+        "SELECT pr_id, COUNT(*) AS n FROM human_comments WHERE gh_resolved = 0 AND resolved_at IS NULL GROUP BY pr_id",
+      )
+      .all();
+    return new Map(rows.map((r) => [r.pr_id, r.n]));
+  }
+
+  /** Records that these items reached a session, which now owes a draft for each human comment among them. */
+  markHumanDelivered(prId: string, itemIds: string[], sessionId: string, now: number) {
+    const q = this.db.query(
+      `UPDATE human_comments SET delivered_at = $t, delivered_session = $s, draft_requested_at = NULL
+       WHERE pr_id = $p AND item_id = $i`,
+    );
+    this.db.transaction(() => {
+      for (const i of itemIds) q.run({ p: prId, i, s: sessionId, t: now });
+    })();
+  }
+
+  setHumanDraft(
+    prId: string,
+    itemId: string,
+    d: { summary: string | null; change: string | null; reply: string | null; by: "agent" | "user" },
+    now: number,
+  ): boolean {
+    return (
+      this.db
+        .query(
+          `UPDATE human_comments SET draft_summary = $s, draft_change = $c, draft_reply = $r, draft_at = $t, draft_by = $by
+           WHERE pr_id = $p AND item_id = $i`,
+        )
+        .run({ p: prId, i: itemId, s: d.summary, c: d.change, r: d.reply, t: now, by: d.by }).changes > 0
+    );
+  }
+
+  setHumanResolved(prId: string, itemId: string, resolved: boolean, now: number): boolean {
+    return (
+      this.db
+        .query("UPDATE human_comments SET resolved_at = $t WHERE pr_id = $p AND item_id = $i")
+        .run({ p: prId, i: itemId, t: resolved ? now : null }).changes > 0
+    );
+  }
+
+  /**
+   * Open human comments delivered to the session with no draft since that delivery,
+   * that the agent hasn't been asked about yet.
+   */
+  missingDrafts(sessionId: string): HumanCommentRow[] {
+    return this.db
+      .query<HumanCommentRow, { s: string }>(
+        `SELECT * FROM human_comments
+         WHERE delivered_session = $s AND delivered_at IS NOT NULL
+           AND (draft_at IS NULL OR draft_at < delivered_at)
+           AND draft_requested_at IS NULL
+           AND gh_resolved = 0 AND resolved_at IS NULL
+         ORDER BY pr_id, item_id`,
+      )
+      .all({ s: sessionId });
+  }
+
+  markDraftRequested(rows: Pick<HumanCommentRow, "pr_id" | "item_id">[], now: number) {
+    const q = this.db.query("UPDATE human_comments SET draft_requested_at = $t WHERE pr_id = $p AND item_id = $i");
+    this.db.transaction(() => {
+      for (const r of rows) q.run({ p: r.pr_id, i: r.item_id, t: now });
+    })();
   }
 
   // ---- events ----

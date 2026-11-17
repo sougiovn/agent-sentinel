@@ -8,6 +8,8 @@ export const COMMANDS = [
   "unwatch",
   "list",
   "check",
+  "comments",
+  "draft",
   "tickets",
   "status",
   "reload",
@@ -28,6 +30,8 @@ const SUBCOMMANDS: Record<string, readonly string[]> = {
 const OPTIONS: Record<string, readonly string[]> = {
   watch: ["--agent", "--session", "--cwd", "--include-existing"],
   list: ["--json"],
+  comments: ["--json"],
+  draft: ["--summary", "--change", "--reply"],
   status: ["--json"],
   tickets: ["--json"],
   daemon: ["--quiet"],
@@ -77,6 +81,8 @@ export async function complete(words: readonly string[], source: CompletionSourc
       return { items: match([...optionsFor(consumed), ...(await watchedPrChoices(source))], current) };
     case "unwatch":
     case "check":
+    case "comments":
+    case "draft":
       return consumed.length === 1 ? { items: match(await watchedPrChoices(source), current) } : { items: [] };
     case "list":
     case "status":

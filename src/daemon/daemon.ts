@@ -280,8 +280,26 @@ export class Daemon {
     switch (method) {
       case "status":
         return this.status() as R;
-      case "list":
-        return this.store.listPrs().map((pr) => ({ ...pr, session: this.store.getSession(pr.session_id) })) as R;
+      case "list": {
+        const open = this.store.openHumanCounts();
+        return this.store
+          .listPrs()
+          .map((pr) => ({ ...pr, session: this.store.getSession(pr.session_id), humanOpen: open.get(pr.id) ?? 0 })) as R;
+      }
+      case "humanComments": {
+        const id = this.requirePr((p as { pr: string }).pr);
+        return this.store.humanComments(id) as R;
+      }
+      case "draft":
+        this.recordDraft(p as RpcMethods["draft"][0]);
+        return { ok: true } as R;
+      case "resolveComment": {
+        const { pr, item, resolved } = p as RpcMethods["resolveComment"][0];
+        const id = this.requirePr(pr);
+        if (!this.store.setHumanResolved(id, item, resolved, this.now())) throw new Error(`No human comment ${item} on ${id}`);
+        this.store.addEvent(id, resolved ? "comment_resolved" : "comment_reopened", { item }, this.now());
+        return { ok: true } as R;
+      }
       case "watch": {
         const req = p as RpcMethods["watch"][0];
         const results = await this.sentinel.watch(req);
@@ -337,7 +355,12 @@ export class Daemon {
         return this.store.events(id) as R;
       }
       case "signal": {
-        const { sessionId, signal } = p as RpcMethods["signal"][0];
+        const { sessionId, signal, stopHookActive } = p as RpcMethods["signal"][0];
+        if (signal === "idle" && this.store.getSession(sessionId)) {
+          // The agent keeps going, so it stays busy and nothing new is delivered yet.
+          const block = this.dispatcher.draftNudge(sessionId, !!stopHookActive);
+          if (block) return { known: true, block } as R;
+        }
         return { known: await this.dispatcher.signal(sessionId, signal) } as R;
       }
       case "pause": {
@@ -356,6 +379,42 @@ export class Daemon {
       default:
         throw new Error(`Unknown method ${String(method)}`);
     }
+  }
+
+  private requirePr(raw: string): string {
+    const id = this.sentinel.resolveId(raw);
+    if (!id) throw new Error(`Not watching ${raw}`);
+    return id;
+  }
+
+  private recordDraft(req: RpcMethods["draft"][0]) {
+    const id = this.requirePr(req.pr);
+    const existing = this.store.getHumanComment(id, req.item);
+    if (!existing) {
+      throw new Error(
+        `${req.item} is not a human comment Sentinel tracks on ${id}. Bot comments don't need a draft; reply to them directly.`,
+      );
+    }
+    const clean = (v: string | undefined) => (v === undefined ? undefined : v.trim() || null);
+    const summary = clean(req.summary);
+    const change = clean(req.change);
+    const reply = clean(req.reply);
+    if (summary === undefined && change === undefined && reply === undefined) throw new Error("Give at least one of summary, change or reply");
+    const by = req.by ?? "agent";
+    const now = this.now();
+    // Fields left out keep what was there, so the dashboard can edit just the reply.
+    this.store.setHumanDraft(
+      id,
+      req.item,
+      {
+        summary: summary === undefined ? existing.draft_summary : summary,
+        change: change === undefined ? existing.draft_change : change,
+        reply: reply === undefined ? existing.draft_reply : reply,
+        by,
+      },
+      now,
+    );
+    this.store.addEvent(id, "draft_recorded", { item: req.item, by }, now);
   }
 
   private async myPrs() {

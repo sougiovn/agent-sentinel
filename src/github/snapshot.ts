@@ -75,3 +75,15 @@ export function newItems(all: Item[], seen: Set<string>, opts: FilterOptions): I
 export function isBot(item: Pick<Item, "author" | "authorType">): boolean {
   return item.authorType === "Bot" || !!item.author?.endsWith("[bot]");
 }
+
+/** Comments and reviews by humans, other than ignored authors. An author that can't be identified counts as human. */
+export function humanItems(all: Item[], opts: FilterOptions): Item[] {
+  return all.filter((i) => i.kind !== "check" && !isBot(i) && isRelevant(i, opts));
+}
+
+/** Item ids (`inline:<id>`) of inline comments whose review thread is resolved on GitHub. */
+export function resolvedInlineIds(activity: PrActivity): Set<string> {
+  const ids = new Set<string>();
+  for (const t of activity.reviewThreads ?? []) if (t.isResolved) for (const c of t.commentIds) ids.add(`inline:${c}`);
+  return ids;
+}

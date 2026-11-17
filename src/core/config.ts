@@ -11,7 +11,10 @@ Evaluator reasoning: {{reason}}
 Instructions:
 - Fix the items above in this repository, commit, and push to the PR branch.
 - You may reply to comments written by bots (user.type "Bot" or login ending in "[bot]").
-- Never reply to, react to, or resolve comments written by humans. If you change code because of a human comment, tell the user what changed and suggest a reply they can paste.
+- Never reply to, react to, or resolve comments written by humans. The user answers them.
+- For every human comment above, once you've dealt with it, record a draft so the user sees it in Sentinel's dashboard:
+  \`sentinel draft {{prUrl}} <item-id> --summary "<what it asks>" --change "<what you changed, with the commit, or why nothing>" --reply "<reply the user can post>"\`
+  The item id is the bracketed id, like \`inline:123\`.
 - If an item doesn't need a code change, explain why instead of changing code.`;
 
 export const DEFAULT_INTRO_TEMPLATE = `Sentinel started this session to own the pull request {{prUrl}} ({{title}}).

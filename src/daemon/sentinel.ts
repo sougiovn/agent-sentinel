@@ -3,8 +3,8 @@ import type { Store } from "../core/db.ts";
 import { parsePrRef, prId, prUrl, type PrRef } from "../core/pr-ref.ts";
 import type { AgentKind, Item, PrRow } from "../core/types.ts";
 import type { Evaluator } from "../evaluator/evaluator.ts";
-import type { GhClient } from "../github/gh.ts";
-import { newItems, normalize, type FilterOptions } from "../github/snapshot.ts";
+import type { GhClient, PrActivity } from "../github/gh.ts";
+import { humanItems, newItems, normalize, resolvedInlineIds, type FilterOptions } from "../github/snapshot.ts";
 import type { Dispatcher } from "../spawn/dispatcher.ts";
 
 export interface SentinelDeps {
@@ -119,6 +119,8 @@ export class Sentinel {
             session: sessionOpts,
           });
           this.d.store.setPrTitle(id, activity.view.title);
+          // Human comments show up in the dashboard even when the rest of the PR is baselined as seen.
+          await this.syncHumanComments(id, ref, activity, now);
           if (created && !req.includeExisting) this.d.store.markSeen(id, normalize(activity));
           this.d.store.addEvent(
             id,
@@ -195,6 +197,7 @@ export class Sentinel {
     }
 
     if (activity.view.title !== pr.title) store.setPrTitle(id, activity.view.title);
+    await this.syncHumanComments(id, ref, activity, now);
 
     const fresh = newItems(normalize(activity), store.seenIds(id), await this.filterOptions(ref));
     if (fresh.length === 0) {
@@ -226,6 +229,11 @@ export class Sentinel {
     store.addPending(id, pr.session_id, flagged.length ? flagged : fresh, verdict.reason, now);
     store.setPrStatus(id, "fix_spawned", `Queued: ${verdict.reason}`, now);
     await dispatcher.dispatch(pr.session_id);
+  }
+
+  private async syncHumanComments(id: string, ref: PrRef, activity: PrActivity, now: number) {
+    const humans = humanItems(normalize(activity), await this.filterOptions(ref));
+    this.d.store.syncHumanComments(id, humans, resolvedInlineIds(activity), now);
   }
 
   private async attachLogTails(ref: PrRef, items: Item[]) {

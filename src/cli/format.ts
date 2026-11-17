@@ -1,4 +1,5 @@
 import { fromPrId } from "../core/pr-ref.ts";
+import { isOpenHumanComment, type HumanCommentRow } from "../core/types.ts";
 import type { PrListEntry, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
 
 /** `[org/repo/123]`; the host is shown only for GitHub Enterprise PRs. */
@@ -63,10 +64,11 @@ export function formatList(list: PrListEntry[]): string {
     p.agent,
     p.session_id.slice(0, 8),
     ago(p.last_checked_at),
+    String(p.humanOpen ?? 0),
     p.last_status,
     (p.last_reason ?? "").replace(/\s+/g, " ").slice(0, 60),
   ]);
-  const head = ["PR", "AGENT", "SESSION", "CHECKED", "STATUS", "REASON"];
+  const head = ["PR", "AGENT", "SESSION", "CHECKED", "HUMAN", "STATUS", "REASON"];
   const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
   const fmt = (r: string[]) => r.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
   return [fmt(head), ...rows.map(fmt)].join("\n");
@@ -76,6 +78,39 @@ function table(head: string[], rows: string[][]): string {
   const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
   const fmt = (r: string[]) => r.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
   return [fmt(head), ...rows.map(fmt)].join("\n");
+}
+
+export type DraftState = "resolved" | "drafted" | "waiting" | "no draft" | "not sent";
+
+/**
+ * Where a human comment stands: resolved, drafted by the agent, delivered and the agent is still
+ * working (`waiting`), delivered but the agent stopped without a draft, or never sent to an agent.
+ */
+export function draftState(c: HumanCommentRow, agentBusy: boolean): DraftState {
+  if (!isOpenHumanComment(c)) return "resolved";
+  if (c.draft_at !== null && (c.draft_reply || c.draft_summary || c.draft_change)) return "drafted";
+  if (c.delivered_at !== null) return agentBusy ? "waiting" : "no draft";
+  return "not sent";
+}
+
+export function humanCommentLocation(c: HumanCommentRow): string {
+  if (c.path) return `${c.path}${c.line ? `:${c.line}` : ""}`;
+  return c.kind === "review" ? "review" : "conversation";
+}
+
+export function formatHumanComments(list: HumanCommentRow[]): string {
+  if (list.length === 0) return "No human comments.";
+  return list
+    .map((c) => {
+      const lines = [`[${c.item_id}] @${c.author ?? "unknown"} · ${humanCommentLocation(c)} · ${draftState(c, false)}`];
+      if (c.url) lines.push(`  ${c.url}`);
+      lines.push(`  ${c.body.replace(/\s+/g, " ").slice(0, 200)}`);
+      if (c.draft_summary) lines.push(`  About: ${c.draft_summary}`);
+      if (c.draft_change) lines.push(`  Change: ${c.draft_change}`);
+      if (c.draft_reply) lines.push(`  Reply: ${c.draft_reply}`);
+      return lines.join("\n");
+    })
+    .join("\n\n");
 }
 
 export function formatTickets(list: TicketListEntry[]): string {

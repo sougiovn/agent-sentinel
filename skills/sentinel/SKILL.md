@@ -35,6 +35,8 @@ If the daemon isn't running, `sentinel watch` starts it.
 | `sentinel list` | PRs being watched, their agent/session, last check and status |
 | `sentinel unwatch <pr>` | Stop watching a PR |
 | `sentinel check [<pr>]` | Poll now instead of waiting for the interval |
+| `sentinel comments <pr>` | Human comments on the PR, whether they're resolved, and their drafts |
+| `sentinel draft <pr> <item-id> --summary … --change … --reply …` | Record a draft for a human comment (see below) |
 | `sentinel status` | Daemon status |
 | `sentinel` | Interactive dashboard (for the user; don't run it from an agent) |
 | `sentinel start` | Start the daemon in the background |
@@ -43,6 +45,22 @@ If Sentinel started you for a Jira ticket and the prompt says to hand off your P
 
 ## When Sentinel resumes you
 
-You'll receive a prompt (or a one-line pointer to a prompt file under `~/.config/sentinel/prompts/`) listing the PR items that need work: comment author (`user.login`, `user.type`), body, file/line, or failing check with a log tail. Follow its instructions: fix, commit, push. Only reply to bot comments; never reply to or resolve human comments — tell the user what you changed and suggest a reply instead.
+You'll receive a prompt (or a one-line pointer to a prompt file under `~/.config/sentinel/prompts/`) listing the PR items that need work: comment author (`user.login`, `user.type`), body, file/line, or failing check with a log tail. Follow its instructions: fix, commit, push. Only reply to bot comments. Never reply to, react to or resolve human comments; the user answers them.
+
+## Human comments: record a draft
+
+For every human comment in the prompt (`(human)` after the author), once you've dealt with it, tell Sentinel what happened so the user can review it in the dashboard and post the reply themselves:
+
+```sh
+sentinel draft <pr> <item-id> \
+  --summary "<what the comment asks>" \
+  --change "<what you changed, with the commit, or why you changed nothing>" \
+  --reply "<a reply the user can post as is>"
+```
+
+- `<item-id>` is the bracketed id from the prompt, like `inline:123`, `issue:456` or `review:789`.
+- Write the reply as the user, addressed to the reviewer. Keep it short.
+- Run it again to replace a draft. Bot comments don't need one.
+- If you stop without recording drafts, Sentinel's Stop hook asks you once to record them.
 
 Merged or closed PRs are dropped automatically.

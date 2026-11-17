@@ -162,14 +162,17 @@ describe("poll → evaluate → spawn", () => {
   });
 });
 
+/** Bot comments: delivering them doesn't make the Stop hook ask for drafts, so idle signals go straight through. */
+const BOT = { login: "ci[bot]", type: "Bot" };
+
 describe("per-session queue", () => {
   test("busy session queues, idle signal delivers into the same pane", async () => {
     const t = await setup();
-    t.gh.comment(ref, { id: 101 });
+    t.gh.comment(ref, { id: 101, user: BOT });
     await t.daemon.sentinel.tick();
     expect(t.mux.allLines()).toHaveLength(1);
 
-    t.gh.comment(ref, { id: 102 });
+    t.gh.comment(ref, { id: 102, user: BOT });
     await t.daemon.sentinel.tick();
     expect(t.mux.allLines()).toHaveLength(1); // queued
     expect(t.store.pendingForSession("sess-1")).toHaveLength(1);
@@ -208,7 +211,7 @@ describe("per-session queue", () => {
 
   test("closed pane is recreated", async () => {
     const t = await setup();
-    t.gh.comment(ref, { id: 101 });
+    t.gh.comment(ref, { id: 101, user: BOT });
     await t.daemon.sentinel.tick();
     t.mux.panes.clear();
     await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle" });
@@ -273,8 +276,8 @@ describe("per-session queue", () => {
     saveConfig(t.paths.config, r.config);
     expect(t.daemon.reload().ok).toBe(true);
 
-    t.gh.comment(ref, { id: 101 });
-    t.gh.comment(ref2, { id: 201 });
+    t.gh.comment(ref, { id: 101, user: BOT });
+    t.gh.comment(ref2, { id: 201, user: BOT });
     await t.daemon.sentinel.tick();
     expect(t.mux.panes.size).toBe(1);
     await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle" });
@@ -623,5 +626,134 @@ describe("new-session RPCs and failures", () => {
     t.gh.comment(ref, { id: 101 });
     await t.daemon.sentinel.tick();
     expect(t.mux.allLines()[0]).toContain(`--session-id '${r!.sessionId}'`);
+  });
+});
+
+describe("human comments", () => {
+  const open = async (t: Awaited<ReturnType<typeof setup>>) => (await t.daemon.handle("list", {}))[0]!.humanOpen;
+
+  test("existing human comments are tracked even when baselined; bots and @me are not", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref);
+    t.gh.comment(ref, { id: 100, body: "why this?" });
+    t.gh.comment(ref, { id: 101, user: { login: "coderabbitai[bot]", type: "Bot" }, body: "nit" });
+    t.gh.comment(ref, { id: 102, user: { login: "me", type: "User" }, body: "mine" });
+    await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: "/r" });
+    const rows = await t.daemon.handle("humanComments", { pr: PR });
+    expect(rows.map((r) => r.item_id)).toEqual(["issue:100"]);
+    expect((await t.daemon.handle("list", {}))[0]!.humanOpen).toBe(1);
+  });
+
+  test("inline comments follow their GitHub thread; deleted comments disappear", async () => {
+    const t = await setup();
+    t.evaluator.next = { shouldFix: false, reason: "question", items: [] };
+    t.gh.comment(ref, { id: 200, body: "rename", path: "a.ts", line: 3 }, "inline");
+    await t.daemon.sentinel.tick();
+    expect(await open(t)).toBe(2);
+    t.gh.thread(ref, [200], true);
+    await t.daemon.sentinel.tick();
+    expect(await open(t)).toBe(1);
+    t.gh.get(ref).conversationComments = [];
+    await t.daemon.sentinel.tick();
+    expect(await open(t)).toBe(0);
+    expect((await t.daemon.handle("humanComments", { pr: PR })).map((r) => r.item_id)).toEqual(["inline:200"]);
+  });
+
+  test("conversation comments stay open until the user resolves them, even after replies", async () => {
+    const t = await setup();
+    t.gh.comment(ref, { id: 101, user: { login: "me", type: "User" }, body: "done" });
+    await t.daemon.sentinel.tick();
+    expect(await open(t)).toBe(1);
+    await t.daemon.handle("resolveComment", { pr: PR, item: "issue:100", resolved: true });
+    expect(await open(t)).toBe(0);
+    await t.daemon.sentinel.tick();
+    expect(await open(t)).toBe(0);
+    await t.daemon.handle("resolveComment", { pr: PR, item: "issue:100", resolved: false });
+    expect(await open(t)).toBe(1);
+    expect(t.store.events(ID).map((e) => e.kind)).toContain("comment_resolved");
+  });
+
+  test("agent drafts are stored; partial updates keep the other fields", async () => {
+    const t = await setup();
+    await t.daemon.handle("draft", { pr: PR, item: "issue:100", summary: "asks why", change: "nothing", reply: "Because." });
+    await t.daemon.handle("draft", { pr: PR, item: "issue:100", reply: "Because X.", by: "user" });
+    const [c] = await t.daemon.handle("humanComments", { pr: PR });
+    expect([c!.draft_summary, c!.draft_change, c!.draft_reply, c!.draft_by]).toEqual(["asks why", "nothing", "Because X.", "user"]);
+    await expect(t.daemon.handle("draft", { pr: PR, item: "issue:999", reply: "x" })).rejects.toThrow("not a human comment");
+    await expect(t.daemon.handle("draft", { pr: PR, item: "issue:100" })).rejects.toThrow("at least one");
+    await expect(t.daemon.handle("draft", { pr: "acme/web#9", item: "issue:100", reply: "x" })).rejects.toThrow("Not watching");
+  });
+
+  test("Stop hook asks once for missing drafts, then lets the agent stop", async () => {
+    const t = await setup();
+    t.gh.comment(ref, { id: 101, body: "please rename" });
+    await t.daemon.sentinel.tick();
+    expect(t.store.getHumanComment(ID, "issue:101")!.delivered_session).toBe("sess-1");
+
+    const first = await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle" });
+    expect(first.block).toContain(`sentinel draft ${ID} issue:101`);
+    expect(first.block).not.toContain("issue:100"); // never delivered
+    expect(t.store.getSession("sess-1")!.state).toBe("busy");
+
+    const second = await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle", stopHookActive: true });
+    expect(second.block).toBeUndefined();
+    expect(t.store.getSession("sess-1")!.state).toBe("idle");
+
+    // Already asked: a later stop doesn't nag again.
+    const third = await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle" });
+    expect(third.block).toBeUndefined();
+  });
+
+  test("a later delivery of the same session asks again for its new comments only", async () => {
+    const t = await setup();
+    t.gh.comment(ref, { id: 101, body: "please rename" });
+    await t.daemon.sentinel.tick();
+    await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle" }); // asks for issue:101
+    await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle", stopHookActive: true }); // lets it stop
+
+    t.gh.comment(ref, { id: 102, body: "add a test" });
+    await t.daemon.sentinel.tick();
+    const r = await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle" });
+    expect(r.block).toContain("issue:102");
+    expect(r.block).not.toContain("issue:101");
+  });
+
+  test("resolved comments are never asked for", async () => {
+    const t = await setup();
+    t.gh.comment(ref, { id: 101, body: "please rename" });
+    await t.daemon.sentinel.tick();
+    await t.daemon.handle("resolveComment", { pr: PR, item: "issue:101", resolved: true });
+    expect((await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle" })).block).toBeUndefined();
+  });
+
+  test("unknown PRs and comments are rejected", async () => {
+    const t = await setup();
+    await expect(t.daemon.handle("humanComments", { pr: "acme/web#9" })).rejects.toThrow("Not watching");
+    await expect(t.daemon.handle("resolveComment", { pr: PR, item: "issue:999", resolved: true })).rejects.toThrow("No human comment");
+  });
+
+  test("closing the PR wipes its human comments", async () => {
+    const t = await setup();
+    expect(t.store.humanComments(ID)).toHaveLength(1);
+    t.gh.get(ref).view.state = "MERGED";
+    await t.daemon.sentinel.tick();
+    expect(t.store.humanComments(ID)).toHaveLength(0);
+  });
+
+  test("no nudge when drafts were recorded, or for bot comments", async () => {
+    const t = await setup();
+    t.gh.comment(ref, { id: 101, body: "please rename" });
+    t.gh.comment(ref, { id: 102, user: { login: "ci[bot]", type: "Bot" }, body: "lint" });
+    await t.daemon.sentinel.tick();
+    await t.daemon.handle("draft", { pr: PR, item: "issue:101", reply: "Renamed." });
+    expect((await t.daemon.handle("signal", { sessionId: "sess-1", signal: "idle" })).block).toBeUndefined();
+  });
+
+  test("fix prompt tells the agent to record drafts", async () => {
+    const t = await setup();
+    t.gh.comment(ref, { id: 101 });
+    await t.daemon.sentinel.tick();
+    const promptFile = /\$\(cat '([^']+)'\)/.exec(t.mux.allLines()[0]!)![1]!;
+    expect(readFileSync(promptFile, "utf8")).toContain("sentinel draft https://github.com/acme/web/pull/1 <item-id>");
   });
 });

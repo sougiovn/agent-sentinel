@@ -45,7 +45,15 @@ export class FakeGh implements GhClient {
       inlineComments: [],
       conversationComments: [],
       reviews: [],
+      reviewThreads: [],
     });
+  }
+  /** Puts inline comments in one review thread with the given resolution. */
+  thread(ref: PrRef, commentIds: number[], isResolved: boolean) {
+    const threads = this.get(ref).reviewThreads;
+    const existing = threads.find((t) => t.commentIds[0] === commentIds[0]);
+    if (existing) Object.assign(existing, { commentIds, isResolved });
+    else threads.push({ commentIds, isResolved });
   }
   get(ref: PrRef): PrActivity {
     const a = this.prs.get(prId(ref));

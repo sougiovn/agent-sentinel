@@ -10,8 +10,8 @@ import type { HookSignal } from "../spawn/launcher.ts";
 import { Client, DaemonUnavailableError } from "./client.ts";
 import { bashCompletion, complete } from "./completion.ts";
 import { startDaemon, stopDaemon } from "./daemon-control.ts";
-import { detectAgent, hookSessionId } from "./detect.ts";
-import { formatList, formatStatus, formatTickets } from "./format.ts";
+import { detectAgent, hookSessionId, hookStopActive } from "./detect.ts";
+import { formatHumanComments, formatList, formatStatus, formatTickets } from "./format.ts";
 
 const HELP = `sentinel — watches PRs for AI agent sessions and resumes them to fix feedback, and starts agents for labelled Jira tickets
 
@@ -23,6 +23,9 @@ Usage:
   sentinel unwatch <pr>         Stop watching a PR
   sentinel list [--json]        List watched PRs
   sentinel check [<pr>]         Poll now
+  sentinel comments <pr> [--json]  Human comments on a PR, with their drafts
+  sentinel draft <pr> <item>    Record a draft for a human comment (from the agent)
+      --summary <what it asks>  --change <what changed>  --reply <proposed reply>
   sentinel tickets [--json]     List Jira tickets Sentinel picked up
   sentinel tickets check        Poll Jira now
   sentinel tickets dismiss <key>  Hide a ticket (it is still never picked up again)
@@ -143,6 +146,24 @@ async function main(argv: string[]) {
       console.log(rest.includes("--json") ? JSON.stringify(list, null, 2) : formatTickets(list));
       return;
     }
+    case "comments": {
+      if (!rest[0]) die("comments needs a PR");
+      const list = await client.call("humanComments", { pr: rest[0] });
+      console.log(rest.includes("--json") ? JSON.stringify(list, null, 2) : formatHumanComments(list));
+      return;
+    }
+    case "draft": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: { summary: { type: "string" }, change: { type: "string" }, reply: { type: "string" } },
+      });
+      const [pr, item] = positionals;
+      if (!pr || !item) die("usage: sentinel draft <pr> <item-id> --summary … --change … --reply …");
+      await client.call("draft", { pr, item, summary: values.summary, change: values.change, reply: values.reply });
+      console.log(`✓ Draft recorded for ${item}. The user will review and post the reply.`);
+      return;
+    }
     case "check": {
       const r = await client.call("check", { pr: rest[0] }, 600_000);
       console.log(r.checked.length ? `Checked ${r.checked.join(", ")}` : "Nothing to check");
@@ -177,7 +198,9 @@ async function main(argv: string[]) {
       const stdin = process.stdin.isTTY ? "" : await Bun.stdin.text();
       const sessionId = hookSessionId(stdin);
       if (sessionId && ["idle", "busy", "exit"].includes(signal)) {
-        await client.call("signal", { sessionId, signal }, 5000).catch(() => {});
+        const r = await client.call("signal", { sessionId, signal, stopHookActive: hookStopActive(stdin) }, 5000).catch(() => null);
+        // Stop hook JSON output: the agent keeps going with `reason` as its next instruction.
+        if (r?.block) process.stdout.write(`${JSON.stringify({ decision: "block", reason: r.block })}\n`);
       }
       return;
     }

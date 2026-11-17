@@ -22,3 +22,12 @@ export function hookSessionId(stdin: string, env: Record<string, string | undefi
   } catch {}
   return env.CLAUDE_CODE_SESSION_ID ?? env.CODEX_THREAD_ID;
 }
+
+/** True when the agent is already continuing because a Stop hook blocked it (Claude's `stop_hook_active`). */
+export function hookStopActive(stdin: string): boolean {
+  try {
+    return (JSON.parse(stdin) as { stop_hook_active?: boolean }).stop_hook_active === true;
+  } catch {
+    return false;
+  }
+}

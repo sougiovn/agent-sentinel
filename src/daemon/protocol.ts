@@ -1,4 +1,4 @@
-import type { EventRow, PrRow, SessionRow, TicketRow } from "../core/types.ts";
+import type { EventRow, HumanCommentRow, PrRow, SessionRow, TicketRow } from "../core/types.ts";
 import type { WatchRequest, WatchResult } from "./sentinel.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
 import type { GoToAgentResult } from "../spawn/dispatcher.ts";
@@ -30,6 +30,25 @@ export interface TicketListEntry extends TicketRow {
 
 export interface PrListEntry extends PrRow {
   session: SessionRow | null;
+  /** Human comments on the PR that aren't resolved yet. */
+  humanOpen: number;
+}
+
+/** A draft for a human comment, recorded by the agent (`sentinel draft`) or edited in the dashboard. */
+export interface DraftRequest {
+  pr: string;
+  /** The comment's item id, e.g. `inline:123`. */
+  item: string;
+  summary?: string;
+  change?: string;
+  reply?: string;
+  by?: "agent" | "user";
+}
+
+/** The Stop hook's answer: `block` is the reason to keep the agent going. */
+export interface SignalResult {
+  known: boolean;
+  block?: string;
 }
 
 /** An open GitHub PR offered by the TUI's "watch a PR" picker. */
@@ -129,7 +148,10 @@ export interface RpcMethods {
   dismissTicket: [{ key: string }, { removed: boolean }];
   pollTickets: [Record<string, never>, { tickets: string[] }];
   history: [{ pr: string }, EventRow[]];
-  signal: [{ sessionId: string; signal: HookSignal }, { known: boolean }];
+  signal: [{ sessionId: string; signal: HookSignal; stopHookActive?: boolean }, SignalResult];
+  humanComments: [{ pr: string }, HumanCommentRow[]];
+  draft: [DraftRequest, { ok: true }];
+  resolveComment: [{ pr: string; item: string; resolved: boolean }, { ok: true }];
   pause: [{ sessionId: string; paused: boolean }, { ok: true }];
   goToAgent: [{ sessionId: string }, GoToAgentResult];
   reload: [Record<string, never>, { ok: boolean; error: string | null }];

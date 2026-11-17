@@ -103,6 +103,7 @@ export class Dispatcher {
         for (const [prId, g] of groups) {
           store.setPrStatus(prId, "fix_running", g.reason);
           store.addEvent(prId, "fix_delivered", { pane: paneId, items: g.items.map((i) => i.id), promptFile }, now);
+          store.markHumanDelivered(prId, g.items.map((i) => i.id), sessionId, now);
         }
         this.d.log(`session ${sessionId}: delivered ${pending.length} item(s) to pane ${paneId}`);
       },
@@ -309,6 +310,25 @@ export class Dispatcher {
     } finally {
       this.inFlight.delete(sessionId);
     }
+  }
+
+  /**
+   * Called when the agent is about to stop. If it was given human comments and hasn't recorded a draft for
+   * them, returns the reason to send back through the Stop hook so the agent continues and records them.
+   * Asks once per delivery, and never while the agent is already continuing because of a Stop hook.
+   */
+  draftNudge(sessionId: string, stopHookActive: boolean): string | null {
+    if (stopHookActive) return null;
+    const missing = this.d.store.missingDrafts(sessionId);
+    if (missing.length === 0) return null;
+    this.d.store.markDraftRequested(missing, this.d.now());
+    const lines = missing.map((m) => `- \`sentinel draft ${m.pr_id} ${m.item_id} --summary "…" --change "…" --reply "…"\``);
+    return [
+      "Before you stop: Sentinel gave you comments written by humans and has no draft for them yet.",
+      "For each one, record what it asks, what you changed (or why nothing), and a reply the user can post:",
+      ...lines,
+      "Don't post the reply yourself.",
+    ].join("\n");
   }
 
   /** Handles an agent hook signal. */

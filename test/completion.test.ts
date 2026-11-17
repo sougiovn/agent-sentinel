@@ -48,6 +48,11 @@ describe("completion", () => {
     expect((await complete(["unwatch", "acme"], source)).items).toEqual(["acme/web#42"]);
     expect((await complete(["unwatch", "acme/web#42", ""], source)).items).toEqual([]);
     expect((await complete(["check", ""], source)).items).toEqual(["acme/web#42", "ghe.corp.io/acme/api#7"]);
+    expect((await complete(["comments", "acme"], source)).items).toEqual(["acme/web#42"]);
+    expect((await complete(["draft", ""], source)).items).toEqual(["acme/web#42", "ghe.corp.io/acme/api#7"]);
+    expect((await complete(["draft", "acme/web#42", ""], source)).items).toEqual([]);
+    expect((await complete(["draft", "acme/web#42", "issue:1", "--"], source)).items).toEqual(["--summary", "--change", "--reply"]);
+    expect((await complete(["comments", "--"], source)).items).toEqual(["--json"]);
     expect((await complete(["tickets", "dismiss", ""], source)).items).toEqual(["CP-1", "CP-2"]);
   });
 

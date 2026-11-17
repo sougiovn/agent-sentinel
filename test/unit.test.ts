@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, loadConfig, parseConfig, saveConfig } from "../src/core/config.ts";
 import { parsePrRef, prId } from "../src/core/pr-ref.ts";
-import { detectAgent, hookSessionId } from "../src/cli/detect.ts";
-import { prGroup, prLabel, prLine, sortByGroup } from "../src/cli/format.ts";
+import { detectAgent, hookSessionId, hookStopActive } from "../src/cli/detect.ts";
+import { draftState, formatHumanComments, formatList, humanCommentLocation, prGroup, prLabel, prLine, sortByGroup } from "../src/cli/format.ts";
+import type { HumanCommentRow } from "../src/core/types.ts";
 import { DaemonUnavailableError, type Client } from "../src/cli/client.ts";
 import { stopDaemon } from "../src/cli/daemon-control.ts";
 import { ClaudeEvaluator, evaluatorArgs, scrubbedAgentEnv } from "../src/evaluator/evaluator.ts";
 import { renderFixPrompt, rexNamingNote } from "../src/evaluator/prompt.ts";
-import { newItems, normalize } from "../src/github/snapshot.ts";
+import { humanItems, newItems, normalize, resolvedInlineIds } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq, writeClaudeHookSettings } from "../src/spawn/launcher.ts";
 import { getPaths } from "../src/core/paths.ts";
 import { cycleEnum, FIELDS, filterFields, parseValue } from "../src/tui/settings.ts";
@@ -135,6 +136,7 @@ describe("snapshot", () => {
       { id: 3, user: { login: "bob", type: "User" }, body: "", state: "COMMENTED" },
       { id: 4, user: { login: "bob", type: "User" }, body: "changes pls", state: "CHANGES_REQUESTED" },
     ],
+    reviewThreads: [{ isResolved: true, commentIds: [1] }],
   };
   const opts = { ignoredAuthors: new Set(["me"]), failingConclusions: new Set(["FAILURE", "ERROR"]) };
 
@@ -154,6 +156,12 @@ describe("snapshot", () => {
   test("seen items are excluded", () => {
     const items = normalize(activity);
     expect(newItems(items, new Set(items.map((i) => i.id)), opts)).toEqual([]);
+  });
+  test("human items skip bots, ignored authors and checks", () => {
+    expect(humanItems(normalize(activity), opts).map((i) => i.id)).toEqual(["review:4"]);
+  });
+  test("resolved inline ids come from review threads", () => {
+    expect([...resolvedInlineIds(activity)]).toEqual(["inline:1"]);
   });
 });
 
@@ -262,6 +270,78 @@ describe("detect", () => {
   test("hook session id", () => {
     expect(hookSessionId('{"session_id":"abc"}', {})).toBe("abc");
     expect(hookSessionId("", { CODEX_THREAD_ID: "t" })).toBe("t");
+  });
+  test("stop_hook_active", () => {
+    expect(hookStopActive('{"session_id":"abc","stop_hook_active":true}')).toBe(true);
+    expect(hookStopActive('{"session_id":"abc","stop_hook_active":false}')).toBe(false);
+    expect(hookStopActive('{"session_id":"abc"}')).toBe(false);
+    expect(hookStopActive("not json")).toBe(false);
+  });
+});
+
+describe("human comment formatting", () => {
+  const row = (patch: Partial<HumanCommentRow> = {}): HumanCommentRow => ({
+    pr_id: "github.com/a/b#1",
+    item_id: "issue:1",
+    kind: "conversation_comment",
+    author: "alice",
+    body: "Why?",
+    url: "https://github.com/a/b/pull/1#issuecomment-1",
+    path: null,
+    line: null,
+    created_at: null,
+    first_seen_at: 1,
+    gh_resolved: 0,
+    resolved_at: null,
+    delivered_at: null,
+    delivered_session: null,
+    draft_requested_at: null,
+    draft_summary: null,
+    draft_change: null,
+    draft_reply: null,
+    draft_at: null,
+    draft_by: null,
+    ...patch,
+  });
+
+  test("draft state", () => {
+    expect(draftState(row(), false)).toBe("not sent");
+    expect(draftState(row({ delivered_at: 5 }), true)).toBe("waiting");
+    expect(draftState(row({ delivered_at: 5 }), false)).toBe("no draft");
+    expect(draftState(row({ delivered_at: 5, draft_at: 6, draft_reply: "Done." }), false)).toBe("drafted");
+    expect(draftState(row({ draft_at: 6, draft_reply: "Done.", resolved_at: 7 }), false)).toBe("resolved");
+    expect(draftState(row({ gh_resolved: 1 }), false)).toBe("resolved");
+  });
+
+  test("location and CLI listing", () => {
+    expect(humanCommentLocation(row({ kind: "inline_comment", path: "a.ts", line: 3 }))).toBe("a.ts:3");
+    expect(humanCommentLocation(row({ kind: "review" }))).toBe("review");
+    expect(humanCommentLocation(row())).toBe("conversation");
+    expect(formatHumanComments([])).toBe("No human comments.");
+    const out = formatHumanComments([row({ draft_summary: "Asks why", draft_change: "Nothing", draft_reply: "Because.", draft_at: 2 })]);
+    expect(out).toContain("[issue:1] @alice · conversation · drafted");
+    expect(out).toContain("About: Asks why");
+    expect(out).toContain("Reply: Because.");
+  });
+
+  test("list shows open human comments", () => {
+    const pr = {
+      id: "github.com/a/b#1",
+      url: "u",
+      agent: "claude" as const,
+      session_id: "sess-123456",
+      cwd: "/r",
+      registered_at: 1,
+      last_checked_at: null,
+      last_status: "no_changes" as const,
+      last_reason: null,
+      title: "t",
+      session: null,
+      humanOpen: 2,
+    };
+    const [head, line] = formatList([pr]).split("\n");
+    expect(head).toContain("HUMAN");
+    expect(line!.split(/\s{2,}/)).toContain("2");
   });
 });
 
@@ -494,12 +574,42 @@ describe("gh listMyPrs", () => {
   });
 });
 
+describe("gh reviewThreads", () => {
+  test("pages through threads with the cursor and keeps REST comment ids", async () => {
+    const calls: string[][] = [];
+    const page = (nodes: unknown[], hasNextPage: boolean, endCursor: string | null) =>
+      JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage, endCursor }, nodes } } } } });
+    const run: Exec = async (cmd) => {
+      calls.push(cmd);
+      const stdout = cmd.includes("cursor=c1")
+        ? page([{ isResolved: false, comments: { nodes: [{ databaseId: 30 }] } }], false, null)
+        : page([{ isResolved: true, comments: { nodes: [{ databaseId: 10 }, { databaseId: null }, { databaseId: 11 }] } }], true, "c1");
+      return { code: 0, stderr: "", stdout };
+    };
+    const threads = await new GhCli(run).reviewThreads({ host: "ghe.corp.io", owner: "acme", repo: "web", number: 5 });
+    expect(threads).toEqual([
+      { isResolved: true, commentIds: [10, 11] },
+      { isResolved: false, commentIds: [30] },
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.slice(0, 5)).toEqual(["gh", "api", "graphql", "--hostname", "ghe.corp.io"]);
+    expect(calls[0]).toContain("number=5");
+    expect(calls[0]).not.toContain("cursor=c1");
+  });
+
+  test("a missing PR yields no threads", async () => {
+    const run: Exec = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ data: { repository: null } }) });
+    expect(await new GhCli(run).reviewThreads({ host: "github.com", owner: "a", repo: "b", number: 1 })).toEqual([]);
+  });
+});
+
 describe("store migrations", () => {
   test("a database from before new-session watches upgrades in place", () => {
     const file = join(mkdtempSync(join(tmpdir(), "db-")), "sentinel.db");
     const old = new Store(file);
     old.db.exec(`
       DROP TABLE tickets;
+      DROP TABLE human_comments;
       ALTER TABLE prs DROP COLUMN title;
       ALTER TABLE sessions DROP COLUMN model;
       ALTER TABLE sessions DROP COLUMN effort;
@@ -513,6 +623,8 @@ describe("store migrations", () => {
     expect(store.getPr("github.com/a/b#1")!.title).toBeNull();
     const s = store.getSession("s")!;
     expect([s.model, s.effort, s.started]).toEqual([null, null, 1]);
+    expect(store.humanComments("github.com/a/b#1")).toEqual([]);
+    expect(store.openHumanCounts().size).toBe(0);
     store.close();
   });
 });

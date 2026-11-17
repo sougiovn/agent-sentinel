@@ -45,6 +45,37 @@ export interface PrActivity {
   inlineComments: GhComment[];
   conversationComments: GhComment[];
   reviews: GhComment[];
+  /** Inline review threads: whether each is resolved, and the REST ids of its comments. */
+  reviewThreads: GhReviewThread[];
+}
+
+export interface GhReviewThread {
+  isResolved: boolean;
+  commentIds: number[];
+}
+
+const REVIEW_THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { isResolved comments(first: 100) { nodes { databaseId } } }
+      }
+    }
+  }
+}`;
+
+interface ReviewThreadsPage {
+  data: {
+    repository: {
+      pullRequest: {
+        reviewThreads: {
+          pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          nodes: { isResolved: boolean; comments: { nodes: { databaseId: number | null }[] } }[];
+        };
+      } | null;
+    } | null;
+  };
 }
 
 /** An open PR found by searching GitHub. */
@@ -102,13 +133,49 @@ export class GhCli implements GhClient {
   }
 
   async fetchActivity(ref: PrRef): Promise<PrActivity> {
-    const [view, inlineComments, conversationComments, reviews] = await Promise.all([
+    const [view, inlineComments, conversationComments, reviews, reviewThreads] = await Promise.all([
       this.prView(ref, "state,title,body,headRefOid,statusCheckRollup"),
       this.api<GhComment>(ref, `pulls/${ref.number}/comments`),
       this.api<GhComment>(ref, `issues/${ref.number}/comments`),
       this.api<GhComment>(ref, `pulls/${ref.number}/reviews`),
+      this.reviewThreads(ref),
     ]);
-    return { view, inlineComments, conversationComments, reviews };
+    return { view, inlineComments, conversationComments, reviews, reviewThreads };
+  }
+
+  /** Review threads come only from GraphQL; REST has no resolved state. Reads up to 100 comments per thread. */
+  async reviewThreads(ref: PrRef): Promise<GhReviewThread[]> {
+    const threads: GhReviewThread[] = [];
+    let cursor: string | null = null;
+    do {
+      const args = [
+        "gh",
+        "api",
+        "graphql",
+        "--hostname",
+        ref.host,
+        "-F",
+        `owner=${ref.owner}`,
+        "-F",
+        `repo=${ref.repo}`,
+        "-F",
+        `number=${ref.number}`,
+        "-f",
+        `query=${REVIEW_THREADS_QUERY}`,
+      ];
+      if (cursor) args.push("-f", `cursor=${cursor}`);
+      const page = JSON.parse(await execOk(this.run, args)) as ReviewThreadsPage;
+      const conn = page.data.repository?.pullRequest?.reviewThreads;
+      if (!conn) break;
+      for (const n of conn.nodes) {
+        threads.push({
+          isResolved: n.isResolved,
+          commentIds: n.comments.nodes.map((c) => c.databaseId).filter((id): id is number => id !== null),
+        });
+      }
+      cursor = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
+    } while (cursor);
+    return threads;
   }
 
   async listMyPrs(opts: ListPrsOptions): Promise<PrSummary[]> {

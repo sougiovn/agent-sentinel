@@ -98,3 +98,45 @@ export interface TicketRow {
   /** The PR the ticket's session handed off to Sentinel, once it has. */
   pr_id: string | null;
 }
+
+/**
+ * A comment written by a human (not a bot, not an ignored author) on a watched PR, tracked until resolved.
+ * Inline review comments follow their GitHub thread's resolution; every other kind is resolved only
+ * when the user marks it resolved in the dashboard.
+ */
+export interface HumanCommentRow {
+  pr_id: string;
+  /** Same id the agent sees in fix prompts, e.g. `inline:123`, `issue:456`, `review:789`. */
+  item_id: string;
+  kind: Exclude<ItemKind, "check">;
+  author: string | null;
+  body: string;
+  url: string | null;
+  path: string | null;
+  line: number | null;
+  created_at: string | null;
+  first_seen_at: number;
+  /** 1 when the inline comment's review thread is resolved on GitHub. */
+  gh_resolved: number;
+  /** When the user marked it resolved in the dashboard. */
+  resolved_at: number | null;
+  /** When Sentinel last delivered it to an agent session, and which one. */
+  delivered_at: number | null;
+  delivered_session: string | null;
+  /** Set once the Stop hook has asked the agent for a missing draft, so it asks only once per delivery. */
+  draft_requested_at: number | null;
+  /** What the comment asks for, in the agent's words. */
+  draft_summary: string | null;
+  /** What the agent changed because of it, or why nothing changed. */
+  draft_change: string | null;
+  /** Proposed reply for the user to post. */
+  draft_reply: string | null;
+  draft_at: number | null;
+  /** "agent", or "user" once edited in the dashboard. */
+  draft_by: string | null;
+}
+
+/** Open = not resolved on GitHub and not marked resolved by the user. */
+export function isOpenHumanComment(c: Pick<HumanCommentRow, "gh_resolved" | "resolved_at">): boolean {
+  return !c.gh_resolved && c.resolved_at === null;
+}
