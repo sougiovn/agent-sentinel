@@ -26,6 +26,8 @@ sentinel start               # start the daemon in the background, no dashboard
 sentinel watch <pr>...       # from inside an agent session: hand off PRs
 sentinel list | status | check [<pr>] | unwatch <pr> | reload | stop | restart
 sentinel tickets [check | dismiss <key>]   # Jira tickets Sentinel picked up
+sentinel comments <pr>       # human comments on a PR and the agent's drafts
+sentinel draft <pr> <item> --summary … --change … --reply …   # from inside an agent session
 ```
 
 Or press `n` in the dashboard to watch one of your open PRs without an agent session. Pick a PR, choose the model, effort and local clone, and Sentinel starts a new Claude session for it, either right away or when the first feedback arrives.
@@ -56,8 +58,9 @@ Completion covers commands, options, the PRs Sentinel is already watching (`watc
 
 ### TUI keys
 
-`↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `g` repos and worktrees · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `A` go to the agent (focus its pane, or reopen it in a new tab) · `t` switch to the Jira tickets list (`o` open, `A` go to agent, `d` dismiss) · `s` settings · `R` reload config and theme · `S` retry starting the daemon · `?` list every shortcut for the current screen (`/` filters it) · `q` quit. The footer shows as many shortcuts as fit and always ends with `? help`; `?` works everywhere, even while typing in a filter. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
+`↑/↓` select · `/` filter by repo or title · `enter` PR details (human comments and event history) · `o` open in browser · `n` watch one of your PRs · `g` repos and worktrees · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `A` go to the agent (focus its pane, or reopen it in a new tab) · `t` switch to the Jira tickets list (`o` open, `A` go to agent, `d` dismiss) · `s` settings · `R` reload config and theme · `S` retry starting the daemon · `?` list every shortcut for the current screen (`/` filters it) · `q` quit. The footer shows as many shortcuts as fit and always ends with `? help`; `?` works everywhere, even while typing in a filter. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
 In the repos view (`g`): every git repo found two levels under `newWatch.repoRoots`, with all of its worktrees. Under each worktree are the watched PRs whose session works in it and the Jira tickets tied to it: the ticket's handed-off PR, a branch or directory name containing the ticket key (`CP-123-fix`, `feat/CP-123`), or else the ticket session's directory. `↑/↓` select a worktree, `/` filters by repo, branch, path, PR or ticket (every word must match), `o` opens its PR (or ticket), `r` rescans, `esc` goes back. See [docs/features.md](docs/features.md#repos-view) for the details.
+In PR details: the PR's human comments that need you. Agents never answer human comments. Instead they record what each comment asks, what they changed and a proposed reply (`sentinel draft`). `↑/↓` select a comment, `y` copies the reply, `e` edits it in `$EDITOR`, `x` marks the comment resolved (or reopens it), `o` opens it on GitHub. Inline review comments close when their thread is resolved on GitHub. Conversation comments and review bodies stay open until you mark them resolved. See [docs/features.md](docs/features.md#human-comments).
 In settings: `/` filters by name, `enter` edits a field or cycles an enum, and `e` opens a prompt template in `$EDITOR`.
 In the PR picker: type to filter by org, repo, `#number` or title, `↑/↓` to move, `enter` to pick. In the form: `←/→` or `space` changes a value, `e` types a custom model or path, and `enter` on `[ Watch ]` starts the watch.
 
@@ -91,7 +94,7 @@ Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `trans
 
 ## How it works
 
-1. **Poll** (every `pollIntervalSec`, PRs one at a time). Sentinel reads `gh pr view` for state, title, body and checks, and `gh api` for inline comments, conversation comments and reviews. It keeps `user.login` and `user.type` for every author.
+1. **Poll** (every `pollIntervalSec`, PRs one at a time). Sentinel reads `gh pr view` for state, title, body and checks, `gh api` for inline comments, conversation comments and reviews, and `gh api graphql` for whether each review thread is resolved. It keeps `user.login` and `user.type` for every author, and updates the list of human comments that are still open (see [Human comments](docs/features.md#human-comments)).
 2. **Diff** against `seen_items` in SQLite. New comments and reviews count, except from `ignoredAuthors` (by default `@me`, the authenticated `gh` user). Checks count only with a conclusion listed in `failingConclusions`.
 3. **Evaluate** the whole batch in one `claude -p --model <evaluator.model>` call with a JSON schema and no tools, run from `~/.config/sentinel/eval`. Failed checks include the tail of `gh run view --log-failed`.
    - On success, every item in the batch is marked seen.
@@ -100,7 +103,7 @@ Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `trans
 5. **Deliver** into a pane Sentinel owns. With the default `spawn.layout: "sentinel-tab"`, there is one session/workspace named `spawn.sessionName`, holding one pane per agent session, with up to `maxPanesPerTab` panes before another tab opens.
    - New pane, or the agent has exited: Sentinel types `claude --resume <id> --settings <hooks> … -- "<prompt>"` (or `codex resume <id> …`) into the pane. A session started from the dashboard uses `--session-id <id>` on its first launch, plus its `--model`/`--effort`.
    - Agent still running and idle: Sentinel types a one-line pointer to the prompt file.
-6. **Track state**: agent hooks call `sentinel hook idle|busy|exit`, which marks the session busy or idle. `spawn.busyTimeoutMin` frees a session if no idle signal arrives.
+6. **Track state**: agent hooks call `sentinel hook idle|busy|exit`, which marks the session busy or idle. `spawn.busyTimeoutMin` frees a session if no idle signal arrives. If the agent was given human comments and tries to stop without recording a draft for each one (`sentinel draft`), the `Stop` hook sends it back once to record them.
 7. **Clean up**: closed or merged PRs are deleted from the database and no longer watched.
 
 If the multiplexer can't be reached, the PR shows `spawn_failed` and its items are un-marked, so the next poll re-evaluates them together with any newer activity.
@@ -111,7 +114,7 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
 | --- | --- |
 | `config.json` | Settings. Watched by the daemon; invalid edits are logged and the last good config is kept. |
 | `theme.json` | Dashboard colours. Watched by the TUI; invalid edits keep the last good theme. |
-| `sentinel.db` | SQLite: `prs`, `seen_items`, `pending_items`, `sessions`, `events` (last 50 per PR), `tickets` |
+| `sentinel.db` | SQLite: `prs`, `seen_items`, `pending_items`, `sessions`, `events` (last 50 per PR), `tickets`, `human_comments` |
 | `sentinel.sock`, `sentinel.pid`, `sentinel.log` | Daemon socket, pidfile and log |
 | `prompts/` | Fix prompts delivered to agents (pruned after 7 days) |
 | `hooks/claude-settings.json` | Settings passed to Claude sessions Sentinel launches: state hooks, and the daemon socket in the sandbox allowlist |

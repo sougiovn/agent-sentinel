@@ -7,6 +7,7 @@ This page describes what Sentinel does today and how each part behaves. The [REA
 - [Jira tickets](#jira-tickets)
 - [Polling](#polling)
 - [Detecting new activity](#detecting-new-activity)
+- [Human comments](#human-comments)
 - [Evaluation](#evaluation)
 - [Queueing and delivery](#queueing-and-delivery)
 - [Agent state hooks](#agent-state-hooks)
@@ -27,6 +28,7 @@ This page describes what Sentinel does today and how each part behaves. The [REA
 3. Anything new is batched per PR and sent to one `claude -p` call, which decides whether the agent needs to act.
 4. Flagged items go into a per-session queue. When the session is free, Sentinel opens (or reuses) a pane in its own multiplexer session and resumes the agent with a prompt describing the work.
 5. Hooks in the resumed agent tell Sentinel when it's busy, idle or has exited, so the next batch is delivered only once the agent is done.
+   - For human comments, the agent records a draft reply with `sentinel draft` instead of answering on GitHub. The dashboard shows which human comments are still open (see [Human comments](#human-comments)).
 6. When the PR is closed or merged, Sentinel deletes everything it stored about it.
 
 Code map: `src/daemon/sentinel.ts` (steps 1–4), `src/spawn/dispatcher.ts` (steps 4–5), `src/github/` (step 2), `src/evaluator/` (step 3), `src/mux/` (panes).
@@ -112,6 +114,24 @@ Everything fetched is turned into items with stable IDs (`src/github/snapshot.ts
 - **Edits are ignored:** an edited comment keeps its ID, so it's never re-evaluated.
 - **Failed-run logs:** for failed check runs that have an Actions run ID, Sentinel attaches the last `evaluator.failedLogLines` lines (default 150) of `gh run view <run> --log-failed`, for at most 5 checks per batch. Set `failedLogLines` to 0 to skip this.
 
+## Human comments
+
+Agents never reply to, react to, or resolve comments written by humans; you do. Sentinel tracks those comments so you can see which ones still need you, and gets a draft answer for each one from the agent.
+
+**Tracking** (`human_comments` table, updated on every poll and at registration):
+- A human comment is an inline review comment, conversation comment or review body whose author isn't a bot (`user.type` `Bot` or a login ending in `[bot]`) and isn't in `ignoredAuthors`. An author that can't be identified counts as human.
+- Tracking doesn't depend on the evaluator or on the seen set. Comments that were baselined, or that the evaluator found nothing to change for (a question for you, say), are tracked too.
+- **Inline review comments** follow their GitHub review thread. Sentinel reads `reviewThreads { isResolved }` through `gh api graphql`, since REST has no resolved state, and the comment closes when its thread is resolved on GitHub.
+- **Conversation comments and review bodies** have no resolved state on GitHub. They stay open until you mark them resolved in the dashboard (`x`), even after someone replies.
+- Deleted comments are dropped. Edits update the stored body.
+
+**Drafts from the agent:**
+- The fix prompt tells the agent to run `sentinel draft <pr> <item-id> --summary … --change … --reply …` for every human comment it was given: what the comment asks, what it changed (or why nothing), and a reply you can post. Fields left out keep their previous value. Drafts are accepted only for tracked human comments.
+- **Stop hook check:** when an agent session that was given human comments tries to stop without a draft for each one, `sentinel hook idle` answers the `Stop` hook with `{"decision":"block","reason":…}`. The reason lists the missing `sentinel draft` commands, so the agent keeps going and records them. The session stays busy meanwhile. Sentinel asks once per delivery, and never while the agent is already continuing because of a Stop hook (`stop_hook_active`). If the agent still stops without one, the comment shows `⚠ no draft`.
+- Sentinel never posts anything to GitHub. Posting from the dashboard is tracked in [#6](https://github.com/sougiovn/agent-sentinel/issues/6).
+
+**States** shown in the dashboard: `needs you` (open, never sent to the agent), `agent working` (sent, the agent is still busy), `draft ready`, `⚠ no draft` (sent, the agent stopped without one) and `✓ resolved`.
+
 ## Evaluation
 
 All new items for one PR go to a single headless Claude call (`src/evaluator/evaluator.ts`):
@@ -196,7 +216,7 @@ Resumed agents report their state back through `sentinel hook <signal>`. The hoo
 | Signal | Claude hook | Codex hook | Effect |
 | --- | --- | --- | --- |
 | `busy` | `UserPromptSubmit` | `UserPromptSubmit` | Session busy; nothing is delivered |
-| `idle` | `Stop` | `Stop` | Session idle; queued items are delivered by typing the pointer line |
+| `idle` | `Stop` | `Stop` | Session idle; queued items are delivered by typing the pointer line. If human comments it was given have no draft yet, the hook blocks the stop once instead (see [Human comments](#human-comments)) |
 | `exit` | `SessionEnd` | none | Agent gone; the next delivery types the full launch command |
 
 - Claude receives the hooks through `--settings ~/.config/sentinel/hooks/claude-settings.json`, which Sentinel writes before each launch. The same file adds the daemon socket to `sandbox.network.allowUnixSockets`, so a sandboxed agent can still run `sentinel watch` and the other CLI commands (for example a Jira ticket session handing off its PR). Without it the CLI can't reach the daemon, reports it as not running and tries to start another one. Sessions you start yourself need the socket in your own settings: add `~/.config/sentinel/sentinel.sock` to `sandbox.network.allowUnixSockets` in `~/.claude/settings.json`.
@@ -223,7 +243,7 @@ A poll that finds nothing new keeps `fix_spawned` and `fix_running` as they are,
 
 ## Closed and merged PRs
 
-When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR row and, through cascading deletes, its seen items, queued items and event history. The owning agent session is removed if it has no other PRs. The PR is no longer polled. Draft PRs keep being watched.
+When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR row and, through cascading deletes, its seen items, queued items, human comments and event history. The owning agent session is removed if it has no other PRs. The PR is no longer polled. Draft PRs keep being watched.
 
 ## The daemon
 
@@ -231,7 +251,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - The daemon is independent of the dashboard: quitting the TUI leaves it running.
 - `sentinel daemon` runs it in the foreground and logs to stderr as well as `sentinel.log`. Startup failures are written to the log too.
 - **Single instance:** a second daemon refuses to start while one is answering on the socket. A leftover socket file from a crashed daemon is removed on start.
-- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`, `myPrs`, `newWatchDefaults`, `suggestCwd`, `validateCwd`, `repos`. `repos` returns the [repos view](#repos-view): the configured roots and each repo's worktrees with the PR ids and ticket keys tied to them. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
+- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `humanComments`, `draft`, `resolveComment`, `goToAgent`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`, `myPrs`, `newWatchDefaults`, `suggestCwd`, `validateCwd`, `repos`. `repos` returns the [repos view](#repos-view): the configured roots and each repo's worktrees with the PR ids and ticket keys tied to them. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
 - **Stopping:** `sentinel stop` asks the daemon to exit; if it doesn't answer, Sentinel sends `SIGTERM` to the PID in `sentinel.pid`. `SIGINT` and `SIGTERM` shut it down cleanly, removing the socket and pidfile. It waits up to 5 seconds for the daemon to stop answering.
 - **Restarting:** `sentinel restart` stops the daemon the same way, then starts a new one in the background (or just starts one if none was running). Use it after upgrading Sentinel, since a daemon started from the old build keeps running until it's stopped.
 - Prompt files older than 7 days are deleted after each poll.
@@ -244,8 +264,10 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel start` | Start the daemon in the background without the dashboard, and print its status |
 | `sentinel watch <pr>...` | Hand off PRs (see [Handing off PRs](#handing-off-prs)) |
 | `sentinel unwatch <pr>` | Stop watching a PR and delete its data |
-| `sentinel list [--json]` | Table of watched PRs: ID, agent, session, last check, status, reason |
+| `sentinel list [--json]` | Table of watched PRs: ID, agent, session, last check, open human comments, status, reason |
 | `sentinel check [<pr>]` | Poll one PR, or all of them, now, then try to deliver queued fixes |
+| `sentinel comments <pr> [--json]` | The PR's human comments: ID, author, location, state, and the draft if there is one |
+| `sentinel draft <pr> <item-id> [--summary …] [--change …] [--reply …]` | Record a draft for a human comment. Run by agents; see [Human comments](#human-comments) |
 | `sentinel tickets [--json]` | Table of Jira tickets Sentinel picked up: key, summary, session, pick-up time, status, reason |
 | `sentinel tickets check` | Poll Jira now |
 | `sentinel tickets dismiss <key>` | Hide a ticket from the list; it still won't be picked up again |
@@ -259,7 +281,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel daemon [--quiet]` | Run the daemon in the foreground |
 | `sentinel hook idle\|busy\|exit` | Used by agent hooks; not meant to be run by hand |
 
-`unwatch`, `list`, `check`, `status` and `reload` need a running daemon and fail with "Sentinel daemon is not running" otherwise. `sentinel`, `sentinel start` and `watch` start it when needed.
+`unwatch`, `list`, `check`, `comments`, `draft`, `status` and `reload` need a running daemon and fail with "Sentinel daemon is not running" otherwise. `sentinel`, `sentinel start` and `watch` start it when needed.
 
 ## TUI
 
@@ -267,14 +289,14 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 
 **Main view:**
 - **Header:** multiplexer, poll interval and countdown to the next poll.
-- **Table:** PRs grouped under an `org/repo` heading (the host is added for GitHub Enterprise), groups sorted alphabetically and PRs by number. Each PR is one line, `#123 - title` (the title is refreshed on every poll), then agent, session, agent, session (with ⏸ when paused), last checked, status (colour-coded) and reason.
+- **Table:** PRs grouped under an `org/repo` heading (the host is added for GitHub Enterprise), groups sorted alphabetically and PRs by number. Each PR is one line, `#123 - title` (the title is refreshed on every poll), then agent, session (with ⏸ when paused), last checked, open human comments (`HUMAN`, highlighted when there are any), status (colour-coded) and reason. The table title shows the total of open human comments across all PRs.
 - **Details panel:** the selected PR's URL, full session ID, directory, pane ID and agent state.
 
 | Key | Action |
 | --- | --- |
 | `↑`/`↓` or `k`/`j` | Select a PR |
 | `/` | Filter watched PRs: every word must appear in the PR's `org/repo` or title. `Enter` keeps the filter and returns to the list, `Esc` clears it |
-| `Enter` | Event history for the PR |
+| `Enter` | PR details: human comments and event history |
 | `n` / `w` | Watch one of your PRs with a new Claude session (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)) |
 | `g` | Repos and worktrees (see [Repos view](#repos-view)) |
 | `o` | Open the selected PR in the browser (`open`, or `xdg-open` on Linux) |
@@ -293,7 +315,9 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - **Footer and `?`:** the footer lists the current screen's shortcuts, most used first, and keeps as many whole ones as fit the terminal width; a `…` marks the ones left out. `? help` is always shown at the right. `?` opens a dialog listing all of the current screen's shortcuts, plus the two that work everywhere (`?` and `Ctrl+C`). It works on every screen, including while a filter input or a value being edited has focus, so `?` can't be typed into those inputs. While the dialog is open other keys are ignored; `Esc`, `?` or `Enter` close it, and `↑`/`↓` scroll it when it doesn't fit. `/` filters the list: every word must appear in a shortcut's key or action. While typing, `Enter` keeps the filter and `Esc` clears it; with a filter kept, `Esc` clears it first and a second `Esc` closes the dialog. A filter input open under the dialog keeps its text and focus. A pending unwatch or dismiss confirmation is cancelled when `?` is pressed. Messages such as "Saved" replace the footer hints for 5 seconds but leave `? help` in place.
 - **Daemon offline:** while the daemon is starting, the TUI shows "Starting Sentinel daemon…". If it fails to start or stops later, the TUI shows the error and offers `S` to try again.
 - **Config errors:** an invalid config file, or a daemon running on its last good config, is shown in a red banner.
-- **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`.
+- **PR details (`Enter`):**
+  - **Human comments:** one line per comment, open ones first: state, author, file and line (or `conversation`/`review`), and the start of the comment. Below the list, the selected comment in full with the agent's draft: `About` (what it asks), `Change` (what the agent did) and the proposed reply. Keys: `↑`/`↓` select, `y` copies the reply to the clipboard (`pbcopy`, `wl-copy`, `xclip` or `xsel`), `e` edits the reply in `$EDITOR` (saved as your draft), `x` marks the comment resolved or reopens it, `o` opens the comment on GitHub, `Esc` goes back. A thread resolved on GitHub can only be reopened on GitHub.
+  - **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `error`, `draft_recorded`, `comment_resolved`, `comment_reopened`.
 
 ### Repos view
 
@@ -420,6 +444,7 @@ Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
 | `hooks/claude-settings.json` | Settings passed to every Claude session Sentinel launches: the state hooks, and the daemon socket in the sandbox allowlist |
 | `eval/` | Working directory for evaluator calls |
 | `fixPromptTemplate.md`, `introPromptTemplate.md`, `jira.promptTemplate.md` | Scratch files used when editing a template from the TUI |
+| `reply-<item>.md` | Scratch file used when editing a human comment's reply from the TUI (`e` in PR details) |
 
 Database tables (`src/core/db.ts`, versioned migrations in `meta.schema_version`):
 
@@ -431,16 +456,19 @@ Database tables (`src/core/db.ts`, versioned migrations in `meta.schema_version`
 | `sessions` | Per agent session: agent, directory, model and effort, whether Sentinel has launched it yet (`started`, 0 only for TUI-started sessions before their first launch), multiplexer, pane and tab IDs, busy or idle, paused, agent running, busy-since and last-signal timestamps |
 | `events` | Per-PR history, trimmed to the newest 50 |
 | `tickets` | One row per Jira ticket picked up: URL, summary, session, directory, pick-up time, status, reason, dismissed, and the PR its session handed off |
+| `human_comments` | Human comments per PR: author, body, location, URL, resolved on GitHub, resolved by you, when and to which session it was delivered, whether the Stop hook asked for its draft, and the draft (summary, change, reply, who wrote it, when) |
 
 The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sentinel.db 'select id, last_status from prs'`. Write to it only while the daemon is stopped.
 
 ## Agent skill
 
-`skills/sentinel/SKILL.md` is built into the binary. It tells Claude Code and Codex agents when to hand off a PR, the `watch`, `unwatch`, `list`, `check` and `status` syntax, how their identity is detected, and what to expect when Sentinel resumes them. Install it with `sentinel skill install`, or print it with `sentinel skill show`.
+`skills/sentinel/SKILL.md` is built into the binary. It tells Claude Code and Codex agents when to hand off a PR, the `watch`, `unwatch`, `list`, `check`, `comments`, `draft` and `status` syntax, how their identity is detected, what to expect when Sentinel resumes them, and how to record a draft for each human comment. Install it with `sentinel skill install`, or print it with `sentinel skill show`.
 
 ## Verification status and known limits
 
 Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, theme parsing (defaults, partial files, status merge, invalid colours and unknown keys), database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, the repos view data (parsing `git worktree list --porcelain`, listing main checkouts but not linked worktrees, tying PRs to the deepest worktree and tickets by handed-off PR, key in the branch or directory name, then session directory, a repo whose worktrees can't be listed, roots that don't exist), new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), PR titles, and the stop logic behind `stop` and `restart`. TUI tests drive the settings dialog and its filter, the PR picker and new-watch form end to end (filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, a custom theme and its live reload (including an invalid edit keeping the last good theme), and starting the daemon.
+
+Human comments are covered with the fake `gh`: tracking baselined comments while skipping bots and `@me`, inline comments following their review thread, deleted comments, conversation comments staying open after replies until you resolve them, reopening, drafts (partial updates, unknown items, unwatched PRs), the fix prompt's instructions, the Stop hook asking once for missing drafts (not for bot or resolved comments, not once drafts exist, not while `stop_hook_active`, and again only for the comments of a later delivery), and closed PRs dropping their human comments. Unit tests cover the `reviewThreads` GraphQL arguments and pagination, reading `stop_hook_active` from the hook payload, the comment states, the `sentinel comments` output, the `HUMAN` column in `sentinel list`, and completion for `comments` and `draft`. TUI tests drive the PR details: the counts in the table, the draft, copying the reply, opening the comment, marking it resolved, refusing to reopen a thread resolved on GitHub, and having no reply to copy. Not covered by automated tests: the `{"decision":"block"}` output of `sentinel hook idle` (tests go through the daemon API), and editing a reply in `$EDITOR`. The `reviewThreads` query was checked by hand against a real PR: its `databaseId`s match the REST comment ids.
 
 TUI tests also cover the repos view: worktrees with their PR and ticket, opening them, the `/` filter, scrolling in a short terminal with the footer kept visible, `r` rescanning with the selection kept on the same worktree, the empty-roots message, and refusing to open while the daemon is offline.
 
