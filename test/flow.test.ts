@@ -1,9 +1,10 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
 import { parsePrRef } from "../src/core/pr-ref.ts";
 import { join } from "node:path";
 import { defaultConfig, saveConfig } from "../src/core/config.ts";
-import { makeDaemon } from "./fakes.ts";
+import { fakeGit, makeDaemon } from "./fakes.ts";
 
 const PR = "acme/web#1";
 const ID = "github.com/acme/web#1";
@@ -281,6 +282,54 @@ describe("per-session queue", () => {
   });
 });
 
+describe("go to agent", () => {
+  test("opens a handed-off session in its own focused tab, then focuses it, and resumes it after the agent exits", async () => {
+    const d = makeDaemon();
+    d.gh.add(parsePrRef("acme/web#1"));
+    await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+
+    const opened = await d.daemon.handle("goToAgent", { sessionId: "s1" });
+    expect(opened.how).toBe("opened");
+    const pane = d.mux.panes.get(opened.paneId)!;
+    expect(pane.opts).toMatchObject({ ownTab: true, focus: true, cwd: "/r", label: "web#1" });
+    expect(pane.lines).toHaveLength(1);
+    expect(pane.lines[0]).toStartWith(`cd '/r' && 'claude' --resume 's1' `);
+    expect(pane.lines[0]).not.toContain("$(cat");
+    expect(d.mux.focused.map((r) => r.paneId)).toEqual([opened.paneId]);
+    expect(d.store.getSession("s1")).toMatchObject({ pane_id: opened.paneId, agent_running: 1, state: "idle" });
+
+    const again = await d.daemon.handle("goToAgent", { sessionId: "s1" });
+    expect(again).toMatchObject({ how: "focused", paneId: opened.paneId });
+    expect(pane.lines).toHaveLength(1);
+    expect(d.mux.panes.size).toBe(1);
+
+    await d.daemon.handle("signal", { sessionId: "s1", signal: "exit" });
+    const resumed = await d.daemon.handle("goToAgent", { sessionId: "s1" });
+    expect(resumed).toMatchObject({ how: "resumed", paneId: opened.paneId });
+    expect(pane.lines).toHaveLength(2);
+    expect(d.mux.focused).toHaveLength(3);
+  });
+
+  test("reports a partial focus as a warning", async () => {
+    const d = makeDaemon();
+    d.gh.add(parsePrRef("acme/web#1"));
+    await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+    d.mux.focusWarning = "Rex app did not switch to the session";
+    expect((await d.daemon.handle("goToAgent", { sessionId: "s1" })).warning).toBe("Rex app did not switch to the session");
+  });
+
+  test("refuses unknown sessions, sessions not started yet, and an unreachable multiplexer", async () => {
+    const d = makeDaemon();
+    await expect(d.daemon.handle("goToAgent", { sessionId: "nope" })).rejects.toThrow("Unknown session");
+    d.store.ensureSession("s2", "claude", "/r", { started: false });
+    await expect(d.daemon.handle("goToAgent", { sessionId: "s2" })).rejects.toThrow("hasn't started yet");
+    d.gh.add(parsePrRef("acme/web#1"));
+    await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+    d.mux.available = false;
+    await expect(d.daemon.handle("goToAgent", { sessionId: "s1" })).rejects.toThrow("rex down");
+  });
+});
+
 describe("rpc", () => {
   test("list, history, unwatch, check", async () => {
     const t = await setup();
@@ -472,6 +521,56 @@ describe("new-session watches (TUI)", () => {
     t.gh.add(ref);
     await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: t.paths.home });
     expect((await t.daemon.handle("suggestCwd", { pr: "acme/web#9" })).path).toBe(t.paths.home);
+  });
+});
+
+describe("repos view", () => {
+  test("lists repos under the roots with their worktrees, watched PRs and tickets", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+    const web = join(root, "web");
+    const wt = join(web, ".claude", "worktrees", "CP-7-fix");
+    mkdirSync(join(web, ".git"), { recursive: true });
+    mkdirSync(wt, { recursive: true });
+    const porcelain = `worktree ${web}\nHEAD aaaa\nbranch refs/heads/main\n\nworktree ${wt}\nHEAD bbbb\nbranch refs/heads/CP-7-fix\n\n`;
+    const t = makeDaemon({ exec: fakeGit({ [web]: "git@github.com:acme/web.git" }, { [web]: porcelain }) });
+    const cfg = defaultConfig();
+    cfg.newWatch.repoRoots = [root];
+    saveConfig(t.paths.config, cfg);
+    t.daemon.reload();
+    t.gh.add(ref);
+    await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: wt });
+    t.store.insertTicket({ key: "CP-7", url: "u", summary: "Fix", sessionId: "t", cwd: root, now: 1, session: {} });
+
+    const view = await t.daemon.handle("repos", {});
+    expect(view.roots).toEqual([root]);
+    expect(view.repos.map((r) => [r.path, r.remote])).toEqual([[web, "github.com/acme/web"]]);
+    expect(view.repos[0]!.worktrees.map((w) => [w.path, w.main, w.prs, w.tickets])).toEqual([
+      [web, true, [], []],
+      [wt, false, [ID], ["CP-7"]],
+    ]);
+  });
+});
+
+describe("repos view errors", () => {
+  test("a repo whose worktrees can't be listed is kept with the git error", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+    mkdirSync(join(root, "odd", ".git"), { recursive: true });
+    const t = makeDaemon({ exec: fakeGit() });
+    const cfg = defaultConfig();
+    cfg.newWatch.repoRoots = [root];
+    saveConfig(t.paths.config, cfg);
+    t.daemon.reload();
+    const view = await t.daemon.handle("repos", {});
+    expect(view.repos.map((r) => [r.path, r.remote, r.worktrees, r.error])).toEqual([[join(root, "odd"), null, [], "not a git repository"]]);
+  });
+
+  test("no roots that exist means no repos", async () => {
+    const t = makeDaemon();
+    const cfg = defaultConfig();
+    cfg.newWatch.repoRoots = [join(t.paths.home, "missing")];
+    saveConfig(t.paths.config, cfg);
+    t.daemon.reload();
+    expect((await t.daemon.handle("repos", {})).repos).toEqual([]);
   });
 });
 

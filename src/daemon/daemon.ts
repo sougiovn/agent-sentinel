@@ -7,13 +7,14 @@ import { ClaudeEvaluator, type Evaluator } from "../evaluator/evaluator.ts";
 import { exec as defaultExec, type Exec } from "../core/exec.ts";
 import { parsePrRef, prId } from "../core/pr-ref.ts";
 import { RepoLocator } from "../core/repo-locate.ts";
+import { linkWorktrees, listRepos } from "../core/worktrees.ts";
 import { GhCli, type GhClient } from "../github/gh.ts";
 import { HcMux } from "../mux/hc.ts";
 import { HerdrMux } from "../mux/herdr.ts";
 import type { Multiplexer } from "../mux/mux.ts";
 import { RexMux } from "../mux/rex.ts";
 import { Dispatcher } from "../spawn/dispatcher.ts";
-import type { RefreshResult, RpcMethod, RpcMethods, RpcRequest, RpcResponse, StatusInfo } from "./protocol.ts";
+import type { RefreshResult, RepoView, RpcMethod, RpcMethods, RpcRequest, RpcResponse, StatusInfo } from "./protocol.ts";
 import { Sentinel } from "./sentinel.ts";
 import { TicketWatcher } from "./tickets.ts";
 import { AcliJira, type JiraClient } from "../jira/acli.ts";
@@ -49,6 +50,7 @@ export class Daemon {
   readonly tickets: TicketWatcher;
   private readonly gh: GhClient;
   private readonly repos: RepoLocator;
+  private readonly run: Exec;
   private config: Config;
   private configError: string | null = null;
   private server?: ReturnType<typeof Bun.serve>;
@@ -92,7 +94,8 @@ export class Daemon {
       log,
     });
     this.gh = o.gh ?? new GhCli();
-    this.repos = new RepoLocator(o.exec ?? defaultExec);
+    this.run = o.exec ?? defaultExec;
+    this.repos = new RepoLocator(this.run);
     this.sentinel = new Sentinel({
       store: this.store,
       gh: this.gh,
@@ -310,6 +313,8 @@ export class Daemon {
         const { pr, path } = p as RpcMethods["validateCwd"][0];
         return (await this.repos.validate(path, parsePrRef(pr))) as R;
       }
+      case "repos":
+        return (await this.repoView()) as R;
       case "unwatch":
         return { removed: this.sentinel.unwatch((p as { pr: string }).pr) } as R;
       case "check": {
@@ -348,6 +353,8 @@ export class Daemon {
         if (!paused) await this.dispatcher.dispatch(sessionId);
         return { ok: true } as R;
       }
+      case "goToAgent":
+        return (await this.dispatcher.goToAgent((p as RpcMethods["goToAgent"][0]).sessionId)) as R;
       case "reload":
         return this.reload() as R;
       case "stop":
@@ -366,6 +373,34 @@ export class Daemon {
         return { id, ...pr.ref, title: pr.title, url: pr.url, isDraft: pr.isDraft, updatedAt: pr.updatedAt, watched: !!this.store.getPr(id) };
       })
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  private async repoView(): Promise<RepoView> {
+    const roots = this.config.newWatch.repoRoots;
+    const repos = await listRepos(this.run, roots);
+    const links = linkWorktrees(
+      repos.flatMap((r) => r.worktrees),
+      this.store.listPrs(),
+      this.store.listTickets(),
+    );
+    return {
+      roots,
+      repos: repos.map((r) => ({
+        path: r.path,
+        root: r.root,
+        remote: r.remote,
+        error: r.error,
+        worktrees: r.worktrees.map((w, i) => ({
+          path: w.path,
+          branch: w.branch,
+          head: w.head,
+          main: i === 0,
+          locked: w.locked,
+          prunable: w.prunable,
+          ...(links.get(w.path) ?? { prs: [], tickets: [] }),
+        })),
+      })),
+    };
   }
 
   /** A watched PR's cwd for the same repo wins over scanning the configured roots. */

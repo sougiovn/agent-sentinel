@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { rgbToHex, type CapturedFrame } from "@opentui/core";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getPaths, ensureHome } from "../src/core/paths.ts";
 import { defaultConfig, loadConfig, saveConfig } from "../src/core/config.ts";
 import { parsePrRef } from "../src/core/pr-ref.ts";
 import { App, type RpcClient } from "../src/tui/app.tsx";
+import { DEFAULT_THEME, saveTheme } from "../src/tui/theme.ts";
 import { fakeGit, makeDaemon } from "./fakes.ts";
 
 test("TUI renders offline state and settings view, and saves an enum toggle", async () => {
@@ -35,6 +37,31 @@ test("TUI renders offline state and settings view, and saves an enum toggle", as
   await Bun.sleep(100);
   const r2 = loadConfig(paths.config);
   expect(r2.ok && r2.config.multiplexer).toBe("hc");
+  t.renderer.destroy();
+});
+
+test("TUI applies a custom theme and reloads it when the file changes", async () => {
+  const paths = getPaths(mkdtempSync(join(tmpdir(), "tui-theme-")));
+  ensureHome(paths);
+  writeFileSync(paths.theme, JSON.stringify({ accent: "#ff00ff" }));
+
+  const fgOf = (frame: CapturedFrame, text: string): string | undefined => {
+    for (const line of frame.lines) for (const span of line.spans) if (span.text.includes(text)) return rgbToHex(span.fg);
+  };
+  const t = await testRender(() => <App paths={paths} autoStart={false} />, { width: 120, height: 24 });
+  const frame = async (ms = 100) => {
+    await Bun.sleep(ms);
+    await t.renderOnce();
+    return t.captureSpans();
+  };
+  expect(fgOf(await frame(), "Agent Sentinel")).toBe("#ff00ff");
+
+  saveTheme(paths.theme, { ...DEFAULT_THEME, accent: "#00ff00" }); // atomic save, via rename
+  expect(fgOf(await frame(500), "Agent Sentinel")).toBe("#00ff00");
+
+  writeFileSync(paths.theme, JSON.stringify({ accent: "#12345" })); // 5 hex digits is invalid
+  expect(fgOf(await frame(500), "Agent Sentinel")).toBe("#00ff00");
+  expect(t.captureCharFrame()).toContain("Theme error (last good theme in use)");
   t.renderer.destroy();
 });
 
@@ -313,6 +340,42 @@ test("TUI asks to start the daemon before opening the PR picker", async () => {
   t.renderer.destroy();
 });
 
+test("TUI goes to the selected PR's or ticket's agent with A", async () => {
+  const t0 = makeDaemon();
+  const cfg = defaultConfig();
+  cfg.jira.enabled = true;
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  t0.gh.add(parsePrRef("acme/web#1"));
+  await t0.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+  t0.jira.add("CP-7", { summary: "Add audit log" });
+  await t0.daemon.runTicketPoll();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 160, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(150);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  expect(await frame()).toContain("A go to agent");
+
+  t.mockInput.pressKey("a"); // lowercase does nothing
+  await frame();
+  expect(t0.mux.focused).toHaveLength(0);
+
+  t.mockInput.pressKey("a", { shift: true });
+  expect(await frame()).toContain("Reopened github.com/acme/web#1's agent");
+  expect(t0.mux.focused.at(-1)!.paneId).toBe(t0.store.getSession("s1")!.pane_id!);
+
+  t.mockInput.pressKey("t");
+  await frame();
+  t.mockInput.pressKey("a", { shift: true });
+  expect(await frame()).toContain("Went to CP-7's agent");
+  const ticketSession = t0.store.getTicket("CP-7")!.session_id;
+  expect(t0.mux.focused.at(-1)!.paneId).toBe(t0.store.getSession(ticketSession)!.pane_id!);
+  t.renderer.destroy();
+});
+
 test("TUI shows picked-up Jira tickets and dismisses one", async () => {
   const t0 = makeDaemon();
   const cfg = defaultConfig();
@@ -346,5 +409,343 @@ test("TUI shows picked-up Jira tickets and dismisses one", async () => {
   f = await frame();
   expect(t0.store.getTicket("CP-7")!.dismissed).toBe(1);
   expect(f).not.toContain("CP-7 - Add audit log");
+  t.renderer.destroy();
+});
+
+test("TUI repos view lists worktrees with their watched PR and Jira ticket", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+  const web = join(root, "web");
+  const wt = join(root, "wt", "CP-7-fix");
+  mkdirSync(join(web, ".git"), { recursive: true });
+  mkdirSync(wt, { recursive: true });
+  const porcelain = `worktree ${web}\nHEAD aaaa\nbranch refs/heads/main\n\nworktree ${wt}\nHEAD bbbb\nbranch refs/heads/CP-7-fix\n\n`;
+  const t0 = makeDaemon({ exec: fakeGit({ [web]: "git@github.com:acme/web.git" }, { [web]: porcelain }) });
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [root];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  t0.gh.add(parsePrRef("acme/web#1"), { title: "Fix login redirect" });
+  await t0.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s", cwd: wt });
+  t0.store.insertTicket({ key: "CP-7", url: "https://acme.atlassian.net/browse/CP-7", summary: "Login loops", sessionId: "t", cwd: root, now: 1, session: {} });
+  const opened: string[] = [];
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} openUrl={(u) => opened.push(u)} />, { width: 140, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("g");
+  const f = await frame();
+  expect(f).toContain("1 repo · 2 worktrees · 1 with a watched PR or ticket");
+  expect(f).toContain("acme/web");
+  expect(f).toContain("main checkout");
+  expect(f).toContain("CP-7-fix");
+  expect(f).toContain("PR #1 - Fix login redirect");
+  expect(f).toContain("CP-7 - Login loops");
+
+  t.mockInput.pressKey("o"); // the main checkout has nothing to open
+  await frame();
+  expect(opened).toEqual([]);
+  t.mockInput.pressArrow("down");
+  await frame();
+  t.mockInput.pressKey("o");
+  await frame();
+  expect(opened).toEqual(["https://github.com/acme/web/pull/1"]);
+
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("login");
+  let ff = await frame();
+  expect(ff).toContain("1 shown");
+  expect(ff).toContain("PR #1 - Fix login redirect");
+  expect(ff).not.toContain("main checkout");
+  t.mockInput.pressEnter(); // leave the input; the filter stays
+  await frame();
+  t.mockInput.pressKey("o");
+  await frame();
+  expect(opened).toEqual(["https://github.com/acme/web/pull/1", "https://github.com/acme/web/pull/1"]);
+  t.mockInput.pressEscape(); // clears the filter
+  ff = await frame();
+  expect(ff).toContain("main checkout");
+
+  t.mockInput.pressEscape();
+  expect(await frame()).toContain("Watched PRs");
+  t.renderer.destroy();
+});
+
+test("TUI repos view scrolls inside its box and keeps the footer visible", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+  const origins: Record<string, string> = {};
+  for (let i = 0; i < 30; i++) {
+    const dir = join(root, `repo-${String(i).padStart(2, "0")}`);
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    origins[dir] = `git@github.com:acme/repo-${String(i).padStart(2, "0")}.git`;
+  }
+  const t0 = makeDaemon({ exec: fakeGit(origins) });
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [root];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 120, height: 24 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("g");
+  let f = await frame();
+  const lines = f.split("\n");
+  expect(lines.findIndex((l) => l.includes("esc back"))).toBeGreaterThan(lines.findIndex((l) => l.includes("acme/repo-00")));
+  expect(f).toContain("o open PR or ticket");
+  expect(f).not.toContain("acme/repo-29");
+
+  for (let i = 0; i < 29; i++) t.mockInput.pressArrow("down");
+  f = await frame();
+  expect(f).toContain("acme/repo-29");
+  expect(f).not.toContain("acme/repo-00");
+  expect(f).toContain("o open PR or ticket");
+  t.renderer.destroy();
+});
+
+test("TUI repos view rescans with r, keeps the selection, and explains empty roots", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "roots-")));
+  const web = join(root, "web");
+  mkdirSync(join(web, ".git"), { recursive: true });
+  const main = `worktree ${web}\nHEAD aaaa\nbranch refs/heads/main\n\n`;
+  const worktrees: Record<string, string> = { [web]: `${main}worktree ${root}/wt-b\nHEAD bbbb\nbranch refs/heads/b\n\n` };
+  const t0 = makeDaemon({ exec: fakeGit({ [web]: "git@github.com:acme/web.git" }, worktrees) });
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [root];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 140, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  const selectedLine = () => {
+    const spans = t.captureSpans();
+    return spans.lines.findIndex((l) => l.spans.some((sp) => sp.bg && rgbToHex(sp.bg) === DEFAULT_THEME.selectionBackground.toLowerCase()));
+  };
+  await frame();
+  t.mockInput.pressKey("g");
+  await frame();
+  t.mockInput.pressArrow("down"); // select worktree b
+  let f = await frame();
+  expect(f).toContain("2 worktrees");
+  const lineOfB = f.split("\n").findIndex((l) => l.includes("wt-b"));
+  expect(lineOfB).toBeGreaterThan(0);
+  expect(selectedLine()).toBe(lineOfB);
+
+  // A worktree created before b in git's order; the selection follows b, not the index.
+  worktrees[web] = `${main}worktree ${root}/wt-a\nHEAD cccc\nbranch refs/heads/a\n\nworktree ${root}/wt-b\nHEAD bbbb\nbranch refs/heads/b\n\n`;
+  t.mockInput.pressKey("r");
+  f = await frame();
+  expect(f).toContain("3 worktrees");
+  expect(selectedLine()).toBe(f.split("\n").findIndex((l) => l.includes("wt-b")));
+  expect(f.split("\n").findIndex((l) => l.includes("wt-b"))).toBeGreaterThan(lineOfB);
+
+  cfg.newWatch.repoRoots = [join(root, "missing")];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  t.mockInput.pressKey("r");
+  expect(await frame()).toContain("No git repositories found two levels under");
+  t.renderer.destroy();
+});
+
+test("TUI repos view needs the daemon", async () => {
+  const paths = getPaths(mkdtempSync(join(tmpdir(), "tui-")));
+  ensureHome(paths);
+  const t = await testRender(() => <App paths={paths} autoStart={false} />, { width: 120, height: 30 });
+  await Bun.sleep(300);
+  t.mockInput.pressKey("g");
+  await Bun.sleep(50);
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain("Start the daemon first (S)");
+  t.renderer.destroy();
+});
+
+test("TUI footer keeps ? help visible, truncates the rest, and ? lists every shortcut", async () => {
+  const t0 = makeDaemon();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 80, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  const footer = (f: string) => f.split("\n").filter((l) => l.trim()).at(-1)!;
+  let f = await frame();
+  expect(footer(f)).toMatch(/…\s+\? help\s*$/);
+  expect(footer(f)).not.toContain("q quit");
+
+  t.mockInput.pressKey("?");
+  f = await frame();
+  expect(f).toContain("Shortcuts · Watched PRs");
+  expect(f).toContain("watch a PR");
+  expect(f).toContain("reload config");
+  expect(f).toContain("quit (works everywhere)");
+  t.mockInput.pressKey("s"); // ignored while the dialog is open
+  f = await frame();
+  expect(f).toContain("Shortcuts · Watched PRs");
+  t.mockInput.pressEscape();
+  f = await frame();
+  expect(f).not.toContain("Shortcuts ·");
+  expect(f).not.toContain("Settings ·");
+
+  // `?` opens help while the filter input has focus, and isn't typed into it.
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("?");
+  f = await frame();
+  expect(f).toContain("Shortcuts · Watched PRs · filter");
+  expect(f).toContain("to filter by repo or title");
+  t.mockInput.pressKey("?");
+  f = await frame();
+  expect(f).not.toContain("Shortcuts ·");
+  expect(f).not.toMatch(/^\s*\/ \?/m);
+  t.renderer.destroy();
+});
+
+test("TUI shortcuts dialog filters with / and leaves a filter underneath focused", async () => {
+  const t0 = makeDaemon();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 120, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("?");
+  await frame();
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("watch");
+  let f = await frame();
+  expect(f).toContain("/ watch");
+  expect(f).toContain("watch a PR");
+  expect(f).not.toContain("reload config");
+  expect(f).not.toContain("quit (works everywhere)");
+
+  t.mockInput.pressBackspace();
+  await t.mockInput.typeText("x"); // "watcx" matches nothing; q and s are typed, not acted on
+  f = await frame();
+  expect(f).toContain('No shortcuts match "watcx"');
+  t.mockInput.pressEnter(); // stop typing, keep the filter
+  await frame();
+  t.mockInput.pressEscape(); // clear the filter
+  f = await frame();
+  expect(f).toContain("Shortcuts · Watched PRs");
+  expect(f).toContain("reload config");
+  t.mockInput.pressEscape(); // close
+  f = await frame();
+  expect(f).not.toContain("Shortcuts ·");
+
+  // Open help over the PR filter input, filter in the dialog, close it: typing still reaches the PR filter.
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("ab");
+  t.mockInput.pressKey("?");
+  await frame();
+  t.mockInput.pressKey("/");
+  await t.mockInput.typeText("zz");
+  expect(await frame()).toContain("/ zz");
+  t.mockInput.pressEscape(); // clear the dialog filter
+  await frame();
+  t.mockInput.pressEscape(); // close the dialog
+  await frame();
+  await t.mockInput.typeText("c");
+  f = await frame();
+  expect(f).not.toContain("Shortcuts ·");
+  expect(f).toMatch(/\/ abc/);
+  t.renderer.destroy();
+});
+
+test("TUI ? works on every screen: settings, a value being edited, a pending confirmation, and next to a message", async () => {
+  const t0 = makeDaemon();
+  t0.gh.add(parsePrRef("acme/web#1"), { title: "Fix login redirect" });
+  await t0.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s", cwd: t0.paths.home });
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 120, height: 30 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  const footer = (f: string) => f.split("\n").filter((l) => l.trim()).at(-1)!;
+  await frame();
+
+  // A pending unwatch is cancelled by ?, and the PR stays watched.
+  t.mockInput.pressKey("d");
+  expect(footer(await frame())).toMatch(/Unwatch github\.com\/acme\/web#1\?.*\? help\s*$/);
+  t.mockInput.pressKey("?");
+  expect(await frame()).toContain("Shortcuts · Watched PRs");
+  t.mockInput.pressEscape();
+  let f = await frame();
+  expect(footer(f)).not.toContain("Unwatch");
+  expect(t0.store.getPr("github.com/acme/web#1")).not.toBeNull();
+
+  // Settings has its own list.
+  t.mockInput.pressKey("s");
+  await frame();
+  t.mockInput.pressKey("?");
+  f = await frame();
+  expect(f).toContain("Shortcuts · Settings");
+  expect(f).toContain("edit template");
+  t.mockInput.pressEscape();
+  await frame();
+
+  // Saving shows "Saved" with ? help still at the right.
+  t.mockInput.pressEnter(); // cycles the multiplexer
+  expect(footer(await frame())).toMatch(/Saved\s+\? help\s*$/);
+
+  // While a value is being edited, ? opens help instead of being typed.
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("session name");
+  t.mockInput.pressEnter();
+  await frame();
+  t.mockInput.pressEnter(); // edit the value
+  await frame();
+  t.mockInput.pressKey("?");
+  f = await frame();
+  expect(f).toContain("Shortcuts · Editing a value");
+  t.mockInput.pressEscape(); // close help
+  await frame();
+  t.mockInput.pressEnter(); // save the untouched value
+  await frame();
+  const r = loadConfig(t0.paths.config);
+  expect(r.ok && r.config.spawn.sessionName).toBe("sentinel");
+  t.renderer.destroy();
+});
+
+test("TUI shortcuts dialog is titled for the repos view", async () => {
+  const t0 = makeDaemon();
+  const cfg = defaultConfig();
+  cfg.newWatch.repoRoots = [join(t0.paths.home, "missing")];
+  saveConfig(t0.paths.config, cfg);
+  t0.daemon.reload();
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 120, height: 30 });
+  await Bun.sleep(100);
+  t.mockInput.pressKey("g");
+  await Bun.sleep(100);
+  t.mockInput.pressKey("?");
+  await Bun.sleep(100);
+  await t.renderOnce();
+  const f = t.captureCharFrame();
+  expect(f).toContain("Shortcuts · Repos");
+  expect(f).toContain("open PR or ticket");
+  expect(f).toContain("rescan");
   t.renderer.destroy();
 });

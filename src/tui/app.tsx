@@ -1,42 +1,30 @@
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, saveConfig, type Config } from "../core/config.ts";
 import type { Paths } from "../core/paths.ts";
 import type { EventRow } from "../core/types.ts";
-import type { MyPr, NewWatchDefaults, PrListEntry, RpcMethod, RpcMethods, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
+import type { MyPr, NewWatchDefaults, PrListEntry, RepoEntry, RepoView, RpcMethod, RpcMethods, StatusInfo, TicketListEntry, WorktreeEntry } from "../daemon/protocol.ts";
 import { Client } from "../cli/client.ts";
 import { startDaemon as startDaemonProcess } from "../cli/daemon-control.ts";
 import { openUrl as defaultOpenUrl } from "../cli/open-url.ts";
 import { ago, prGroup, prLine, sortByGroup } from "../cli/format.ts";
 import { cycleField, displayField, FORM_FIELDS, initialForm, watchRequest, type NewWatchForm } from "./new-watch.ts";
 import { filterPrs, filterWatched } from "./pr-filter.ts";
+import type { ScrollBoxRenderable } from "@opentui/core";
+import { filterRepos, repoLabel, tilde, worktreeLabel } from "./repo-labels.ts";
+import { filterHints, fitHints, HELP_HINT, hintText, type Hint } from "./shortcuts.ts";
 import { cycleEnum, displayValue, editText, FIELDS, filterFields, parseValue } from "./settings.ts";
+import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type Theme } from "./theme.ts";
 
-type View = "list" | "history" | "settings" | "pick-pr" | "new-watch";
+type View = "list" | "history" | "settings" | "pick-pr" | "new-watch" | "repos";
 
 /** The daemon RPC surface the TUI uses; tests pass one backed by an in-process daemon. */
 export interface RpcClient {
   call<M extends RpcMethod>(method: M, params: RpcMethods[M][0], timeoutMs?: number): Promise<RpcMethods[M][1]>;
 }
-
-const MODAL_BG = "#1e272e";
-
-const STATUS_COLOR: Record<string, string> = {
-  no_changes: "#7f8c8d",
-  no_action: "#95a5a6",
-  pending: "#7f8c8d",
-  fix_spawned: "#3498db",
-  fix_running: "#f1c40f",
-  spawn_failed: "#e74c3c",
-  error: "#e74c3c",
-  queued: "#3498db",
-  started: "#f1c40f",
-  in_review: "#2ecc71",
-  transition_failed: "#e67e22",
-};
 
 /** Most Jira ticket rows shown before the list scrolls. */
 const TICKET_ROWS = 6;
@@ -91,6 +79,8 @@ export function App(props: AppProps) {
   const [confirmDelete, setConfirmDelete] = createSignal(false);
   const [config, setConfig] = createSignal<Config | null>(null);
   const [configError, setConfigError] = createSignal<string | null>(null);
+  const [theme, setTheme] = createSignal<Theme>(DEFAULT_THEME);
+  const [themeError, setThemeError] = createSignal<string | null>(null);
   const [fieldSel, setFieldSel] = createSignal(0);
   const [settingsQuery, setSettingsQuery] = createSignal("");
   /** The settings filter input has focus. */
@@ -115,11 +105,70 @@ export function App(props: AppProps) {
   let formDraft = "";
   const filtered = () => filterPrs(myPrs() ?? [], query());
 
+  // repos view
+  const [repoView, setRepoView] = createSignal<RepoView | null>(null);
+  const [repoError, setRepoError] = createSignal<string | null>(null);
+  const [repoLoading, setRepoLoading] = createSignal(false);
+  /** Index into `allWorktrees()`, i.e. the n-th worktree shown. */
+  const [repoSel, setRepoSel] = createSignal(0);
+  const [repoQuery, setRepoQuery] = createSignal("");
+  /** The repos filter input has focus. */
+  const [repoFiltering, setRepoFiltering] = createSignal(false);
+  /** Repos and worktrees after the `/` filter. */
+  const shownRepos = () =>
+    filterRepos(repoView()?.repos ?? [], repoQuery(), {
+      pr: (id) => {
+        const pr = prById(id);
+        return pr ? `${prLine(pr)} ${pr.last_status}` : id;
+      },
+      ticket: (key) => {
+        const t = ticketByKey(key);
+        return t ? `${key} ${t.summary ?? ""} ${t.last_status}` : key;
+      },
+    });
+  const allWorktrees = () => shownRepos().flatMap((r) => r.worktrees);
+  const worktreeIndex = () => new Map(allWorktrees().map((w, i) => [w, i]));
+  const selectedWorktree = () => allWorktrees()[repoSel()];
+  let repoScroll: ScrollBoxRenderable | undefined;
+  createEffect(() => {
+    const i = repoSel();
+    shownRepos();
+    if (view() === "repos" && repoView()) repoScroll?.scrollChildIntoView(`repo-wt-${i}`, { align: "nearest" });
+  });
+  const prById = (id: string) => prs().find((p) => p.id === id);
+  const ticketByKey = (key: string) => tickets().find((t) => t.key === key);
+
+  /** The `?` shortcuts dialog is open. */
+  const [helpOpen, setHelpOpen] = createSignal(false);
+  /**
+   * The dialog's `/` filter. Typed by the key handler rather than an `<input>`, so a filter input
+   * focused under the dialog keeps its focus.
+   */
+  const [helpQuery, setHelpQuery] = createSignal("");
+  const [helpFiltering, setHelpFiltering] = createSignal(false);
+  let helpScroll: ScrollBoxRenderable | undefined;
+
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   const notify = (text: string, error = false) => {
     setFlash({ text, error });
     clearTimeout(flashTimer);
     flashTimer = setTimeout(() => setFlash(null), 5000);
+  };
+
+  /** Opens the session in the multiplexer and focuses it, so the user can talk to the agent in its worktree. */
+  const goToAgent = async (sessionId: string | undefined, what: string) => {
+    if (!sessionId) {
+      notify(`${what} has no agent session yet`, true);
+      return;
+    }
+    try {
+      const r = await client.call("goToAgent", { sessionId }, 30_000);
+      const verb = r.how === "focused" ? "Went to" : r.how === "resumed" ? "Resumed" : "Reopened";
+      notify(r.warning ? `${verb} ${what}'s agent, but ${r.warning}` : `${verb} ${what}'s agent`, !!r.warning);
+    } catch (e) {
+      notify(`Could not go to ${what}'s agent: ${(e as Error).message}`, true);
+    }
+    await refresh();
   };
 
   const refresh = async () => {
@@ -155,8 +204,17 @@ export function App(props: AppProps) {
     } else setConfigError(r.error);
   };
 
+  const readTheme = () => {
+    const r = loadTheme(props.paths.theme);
+    if (r.ok) {
+      setTheme(r.theme);
+      setThemeError(null);
+    } else setThemeError(r.error);
+  };
+
   const reloadAll = async () => {
     readConfig();
+    readTheme();
     if (online()) {
       const r = await client.call("reload", {}).catch((e: Error) => ({ ok: false, error: e.message }));
       if (r.ok) notify("Config reloaded (TUI + daemon)");
@@ -209,6 +267,14 @@ export function App(props: AppProps) {
   };
 
   readConfig();
+  readTheme();
+  const themeWatcher = watchTheme(props.paths.theme, (r) => {
+    if (r.ok) {
+      setTheme(r.theme);
+      setThemeError(null);
+    } else setThemeError(r.error);
+  });
+  onCleanup(() => themeWatcher.close());
   void refresh();
   const interval = setInterval(refresh, 2000);
   onCleanup(() => clearInterval(interval));
@@ -283,6 +349,33 @@ export function App(props: AppProps) {
     }
   };
 
+  const loadRepos = async () => {
+    setRepoLoading(true);
+    try {
+      const keep = selectedWorktree()?.path;
+      setRepoView(await client.call("repos", {}, 60_000));
+      setRepoError(null);
+      const i = allWorktrees().findIndex((w) => w.path === keep);
+      setRepoSel(Math.max(0, Math.min(i >= 0 ? i : repoSel(), allWorktrees().length - 1)));
+    } catch (e) {
+      const msg = (e as Error).message;
+      setRepoError(msg.startsWith("Unknown method") ? "the running daemon is older than this dashboard. Run `sentinel restart`." : msg);
+    } finally {
+      setRepoLoading(false);
+    }
+  };
+
+  const openRepos = async () => {
+    if (!online()) {
+      notify("Start the daemon first (S)", true);
+      return;
+    }
+    setRepoQuery("");
+    setRepoFiltering(false);
+    setView("repos");
+    await loadRepos();
+  };
+
   const pickPr = (pr: MyPr) => {
     const d = defaults();
     if (!d) return;
@@ -349,6 +442,37 @@ export function App(props: AppProps) {
   useKeyboard(async (key) => {
     if (key.ctrl && key.name === "c") {
       renderer.destroy();
+      return;
+    }
+    // Handled before any focused input sees the key, so `?` works while typing a filter too.
+    if (key.sequence === "?" && !key.ctrl && !key.meta) {
+      key.preventDefault();
+      setConfirmDelete(false);
+      setConfirmDismiss(false);
+      setHelpQuery("");
+      setHelpFiltering(false);
+      setHelpOpen((o) => !o);
+      return;
+    }
+    if (helpOpen()) {
+      key.preventDefault();
+      if (helpFiltering()) {
+        if (key.name === "escape") {
+          setHelpQuery("");
+          setHelpFiltering(false);
+        } else if (key.name === "return") setHelpFiltering(false);
+        else if (key.name === "backspace") setHelpQuery((q) => q.slice(0, -1));
+        else if (key.name === "up") helpScroll?.scrollBy(-1);
+        else if (key.name === "down") helpScroll?.scrollBy(1);
+        else if (key.sequence && key.sequence.length === 1 && key.sequence >= " " && !key.ctrl && !key.meta)
+          setHelpQuery((q) => q + key.sequence);
+        return;
+      }
+      if (key.name === "/" || key.sequence === "/") setHelpFiltering(true);
+      else if (key.name === "escape" && helpQuery()) setHelpQuery("");
+      else if (key.name === "escape" || key.name === "q" || key.name === "return") setHelpOpen(false);
+      else if (key.name === "up" || key.name === "k") helpScroll?.scrollBy(-1);
+      else if (key.name === "down" || key.name === "j") helpScroll?.scrollBy(1);
       return;
     }
     if (editing() !== null || formEditing() !== null) {
@@ -481,6 +605,9 @@ export function App(props: AppProps) {
           case "d":
             if (t) setConfirmDismiss(true);
             return;
+          case "a":
+            if (key.shift && t) await goToAgent(t.session?.session_id, t.key);
+            return;
           case "p": {
             if (!t?.session) return;
             const paused = !t.session.paused;
@@ -535,6 +662,9 @@ export function App(props: AppProps) {
         case "w":
           await openPicker();
           return;
+        case "g":
+          await openRepos();
+          return;
         case "o": {
           const pr = current();
           if (!pr) return;
@@ -558,6 +688,11 @@ export function App(props: AppProps) {
         case "d":
           if (current()) setConfirmDelete(true);
           return;
+        case "a": {
+          const pr = current();
+          if (key.shift && pr) await goToAgent(pr.session?.session_id, pr.id);
+          return;
+        }
         case "p": {
           const pr = current();
           if (!pr?.session) return;
@@ -565,6 +700,63 @@ export function App(props: AppProps) {
           await client.call("pause", { sessionId: pr.session_id, paused }).catch((e: Error) => notify(e.message, true));
           notify(`${paused ? "Paused" : "Resumed"} session ${pr.session_id.slice(0, 8)}`);
           await refresh();
+          return;
+        }
+      }
+      return;
+    }
+    if (v === "repos") {
+      if (repoFiltering()) {
+        const last = allWorktrees().length - 1;
+        if (key.name === "escape") {
+          setRepoQuery("");
+          setRepoFiltering(false);
+          setRepoSel(0);
+        } else if (key.name === "return") setRepoFiltering(false);
+        else if (key.name === "up") setRepoSel((i) => Math.max(0, i - 1));
+        else if (key.name === "down") setRepoSel((i) => Math.min(last, i + 1));
+        return; // everything else goes to the filter input
+      }
+      if (key.name === "/" || key.sequence === "/") {
+        await nextTick();
+        setRepoFiltering(true);
+        return;
+      }
+      if (key.name === "escape" && repoQuery()) {
+        setRepoQuery("");
+        setRepoSel(0);
+        return;
+      }
+      switch (key.name) {
+        case "escape":
+        case "q":
+        case "backspace":
+          setView("list");
+          return;
+        case "up":
+        case "k":
+          setRepoSel((i) => Math.max(0, i - 1));
+          return;
+        case "down":
+        case "j":
+          setRepoSel((i) => Math.min(allWorktrees().length - 1, i + 1));
+          return;
+        case "r":
+          await loadRepos();
+          return;
+        case "o": {
+          const wt = selectedWorktree();
+          const url = wt && (prById(wt.prs[0] ?? "")?.url ?? ticketByKey(wt.tickets[0] ?? "")?.url);
+          if (!url) {
+            notify("No watched PR or Jira ticket on this worktree", true);
+            return;
+          }
+          try {
+            (props.openUrl ?? defaultOpenUrl)(url);
+            notify(`Opened ${url}`);
+          } catch (e) {
+            notify(`Could not open ${url}: ${(e as Error).message}`, true);
+          }
           return;
         }
       }
@@ -671,6 +863,80 @@ export function App(props: AppProps) {
     return all.slice(start, start + rows);
   };
 
+  /** Rows of the repos view that fit inside its box (title border, summary line, bottom border). */
+  const repoWidths = () => {
+    const w = dims().width - 6;
+    const branch = Math.min(40, Math.max(16, Math.floor(w * 0.3)));
+    const item = Math.max(24, w - 6 - 14 - 10);
+    return { branch, item };
+  };
+  const repoSummary = () => {
+    const v = repoView();
+    if (!v) return repoLoading() ? "Scanning repo roots…" : "";
+    const wts = v.repos.flatMap((r) => r.worktrees);
+    const linked = wts.filter((w) => w.prs.length || w.tickets.length).length;
+    const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
+    const shown = repoQuery() ? ` · ${allWorktrees().length} shown` : "";
+    return `${n(v.repos.length, "repo")} · ${n(wts.length, "worktree")} · ${linked} with a watched PR or ticket${shown}${repoLoading() ? " · rescanning…" : ""}`;
+  };
+
+  const repoHeading = (repo: RepoEntry) => (
+    <>
+      <box flexDirection="row" flexShrink={0}>
+        <text fg={theme().info} flexShrink={0}>
+          <b>{repoLabel(repo)}</b>
+        </text>
+        <text fg={theme().textMuted}> {tilde(repo.path)}</text>
+      </box>
+      <Show when={repo.error}>
+        <text fg={theme().error}>  {repo.error}</text>
+      </Show>
+    </>
+  );
+
+  /** A worktree and the PRs and tickets tied to it; the repo heading rides with its first worktree so both scroll into view together. */
+  const worktreeGroup = (repo: RepoEntry, wt: WorktreeEntry, firstOfRepo: boolean) => {
+    const n = () => worktreeIndex().get(wt) ?? -1;
+    return (
+      <box id={`repo-wt-${n()}`} flexDirection="column" flexShrink={0}>
+        <Show when={firstOfRepo}>{repoHeading(repo)}</Show>
+        <box flexDirection="row" flexShrink={0} backgroundColor={n() === repoSel() ? theme().selectionBackground : undefined}>
+          <text flexShrink={0}>{pad(`  ${worktreeLabel(wt)}`, repoWidths().branch)} </text>
+          <text fg={theme().textMuted}>
+            {tilde(wt.path)}
+            {wt.main ? " · main checkout" : ""}
+            {wt.locked ? " · locked" : ""}
+          </text>
+          <text fg={theme().warning} flexShrink={0}>{wt.prunable ? " · missing (prunable)" : ""}</text>
+        </box>
+        <For each={wt.prs}>
+          {(id) => {
+            const pr = () => prById(id);
+            return (
+              <box flexDirection="row" flexShrink={0}>
+                <text fg={theme().textSecondary} flexShrink={0}>{pad(`      PR ${prLine(pr() ?? { id })}`, repoWidths().item)} </text>
+                <text fg={statusColor(theme(), pr()?.last_status ?? "")} flexShrink={0}>{pad(pr()?.last_status ?? "", 14)}</text>
+                <text fg={theme().textMuted}>{(pr()?.session_id ?? "").slice(0, 8)}</text>
+              </box>
+            );
+          }}
+        </For>
+        <For each={wt.tickets}>
+          {(key) => {
+            const t = () => ticketByKey(key);
+            return (
+              <box flexDirection="row" flexShrink={0}>
+                <text fg={theme().textSecondary} flexShrink={0}>{pad(`      ${key} - ${t()?.summary ?? ""}`, repoWidths().item)} </text>
+                <text fg={statusColor(theme(), t()?.last_status ?? "")} flexShrink={0}>{pad(t()?.last_status ?? "", 14)}</text>
+                <text fg={theme().textMuted}>{(t()?.session_id ?? "").slice(0, 8)}</text>
+              </box>
+            );
+          }}
+        </For>
+      </box>
+    );
+  };
+
   const pickWidths = () => {
     const w = modalWidth() - 4;
     const repo = Math.min(36, Math.max(16, Math.floor(w * 0.3)));
@@ -692,40 +958,136 @@ export function App(props: AppProps) {
     return all.slice(start, start + rows);
   };
 
-  const footer = () => {
-    if (editing() !== null || formEditing() !== null) return "enter save · esc cancel";
-    if (confirmDelete()) return `Unwatch ${current()?.id}? y to confirm, any key to cancel`;
-    if (confirmDismiss()) return `Dismiss ${currentTicket()?.key}? It won't be picked up again. y to confirm, any key to cancel`;
+  const hint = (key: string, label: string): Hint => ({ key, label });
+
+  /**
+   * The shortcuts for what is on screen now, most used first: the footer shows as many as fit and the
+   * `?` dialog lists them all. `prompt` replaces the footer hints while a confirmation is pending.
+   */
+  const shortcuts = (): { title: string; hints: Hint[]; prompt?: string } => {
+    if (editing() !== null || formEditing() !== null)
+      return { title: "Editing a value", hints: [hint("enter", "save"), hint("esc", "cancel")] };
+    if (confirmDelete())
+      return { title: "Unwatch", prompt: `Unwatch ${current()?.id}? y to confirm, any key to cancel`, hints: [hint("y", "unwatch"), hint("any key", "cancel")] };
+    if (confirmDismiss())
+      return {
+        title: "Dismiss ticket",
+        prompt: `Dismiss ${currentTicket()?.key}? It won't be picked up again. y to confirm, any key to cancel`,
+        hints: [hint("y", "dismiss"), hint("any key", "cancel")],
+      };
     switch (view()) {
       case "history":
-        return "esc back";
+        return { title: "History", hints: [hint("esc", "back")] };
+      case "repos": {
+        if (repoFiltering())
+          return {
+            title: "Repos · filter",
+            hints: [hint("type", "to filter by repo, branch, path, PR or ticket"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")],
+          };
+        const filter = repoQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")];
+        return {
+          title: "Repos",
+          hints: [hint("↑↓", "move"), ...filter, hint("o", "open PR or ticket"), hint("r", "rescan"), hint(repoQuery() ? "q" : "esc", "back")],
+        };
+      }
       case "settings":
-        if (settingsFiltering()) return "type to filter settings · ↑↓ move · enter done · esc clear";
-        return settingsQuery()
-          ? "↑↓ move · enter edit/cycle · / change filter · esc clear filter"
-          : "↑↓ move · enter edit/cycle · / filter · e edit template · r reload · esc back";
+        if (settingsFiltering())
+          return { title: "Settings · filter", hints: [hint("type", "to filter settings"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
+        return {
+          title: "Settings",
+          hints: [
+            hint("↑↓", "move"),
+            hint("enter", "edit/cycle"),
+            ...(settingsQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")]),
+            hint("e", "edit template"),
+            hint("r", "reload"),
+            hint(settingsQuery() ? "q" : "esc", "back"),
+          ],
+        };
       case "pick-pr":
-        return "type to filter (org, repo, #number, title) · ↑↓ move · enter pick · esc back";
+        return {
+          title: "Watch a PR",
+          hints: [hint("type", "to filter (org, repo, #number, title)"), hint("↑↓", "move"), hint("enter", "pick"), hint("esc", "back")],
+        };
       case "new-watch":
-        return "↑↓ move · ←→/space change · e type a model or path · enter on [ Watch ] to start · esc back";
+        return {
+          title: "New watch",
+          hints: [
+            hint("↑↓", "move"),
+            hint("←→/space", "change"),
+            hint("e", "type a model or path"),
+            hint("enter", "on [ Watch ] to start"),
+            hint("esc", "back"),
+          ],
+        };
       default:
-        if (listFiltering()) return "type to filter by repo or title · ↑↓ move · enter done · esc clear";
-        if (ticketFocus()) return "↑↓ move · o open ticket · d dismiss · p pause/resume · t/esc back to PRs · r refresh all · q quit";
-        if (listQuery())
-          return "↑↓ move · enter history · o open · / change filter · esc clear filter · c check · r refresh · d unwatch · p pause";
-        return online()
-          ? `↑↓ move · / filter · enter history · o open · n watch a PR · c check now · r refresh all · d unwatch · p pause/resume${showTickets() ? " · t tickets" : ""} · s settings · R reload · q quit`
-          : "S start daemon · R reload config · q quit";
+        if (!online())
+          return { title: "Watched PRs", hints: [hint("S", "start daemon"), hint("R", "reload config"), hint("s", "settings"), hint("q", "quit")] };
+        if (listFiltering())
+          return { title: "Watched PRs · filter", hints: [hint("type", "to filter by repo or title"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
+        if (ticketFocus())
+          return {
+            title: "Jira tickets",
+            hints: [
+              hint("↑↓", "move"),
+              hint("o", "open ticket"),
+              hint("A", "go to agent"),
+              hint("d", "dismiss"),
+              hint("p", "pause/resume"),
+              hint("t/esc", "back to PRs"),
+              hint("r", "refresh all"),
+              hint("q", "quit"),
+            ],
+          };
+        return {
+          title: "Watched PRs",
+          hints: [
+            hint("↑↓", "move"),
+            ...(listQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")]),
+            hint("enter", "history"),
+            hint("o", "open"),
+            hint("A", "go to agent"),
+            hint("n", "watch a PR"),
+            hint("g", "repos"),
+            hint("c", "check now"),
+            hint("r", "refresh all"),
+            hint("d", "unwatch"),
+            hint("p", "pause/resume"),
+            ...(showTickets() ? [hint("t", "tickets")] : []),
+            hint("s", "settings"),
+            hint("R", "reload config"),
+            hint("q", "quit"),
+          ],
+        };
     }
   };
+
+  /** Columns left of the always-shown `? help` (app padding on both sides, a two-space gap). */
+  const footerWidth = () => Math.max(0, dims().width - 2 - hintText(HELP_HINT).length - 2);
+  const footerLeft = () => {
+    const sc = shortcuts();
+    return sc.prompt ? pad(sc.prompt, footerWidth()) : fitHints(sc.hints, footerWidth());
+  };
+  /** The `?` dialog's rows: the current screen's shortcuts, then the two that work everywhere. */
+  const helpRows = () =>
+    filterHints(
+      [
+        ...shortcuts().hints.map((h) => ({ ...h, global: false })),
+        { key: "?", label: "show or hide this list (works everywhere)", global: true },
+        { key: "ctrl+c", label: "quit (works everywhere)", global: true },
+      ],
+      helpQuery(),
+    );
+  const showHelpFilter = () => helpFiltering() || helpQuery() !== "";
+  const helpHeight = () => Math.max(6, Math.min(shortcuts().hints.length + 7, dims().height - 4));
 
   return (
     <box flexDirection="column" width="100%" height="100%" padding={1}>
       <box flexDirection="row" justifyContent="space-between" height={1}>
-        <text fg="#2ecc71">
+        <text fg={theme().accent}>
           <b>Agent Sentinel</b>
         </text>
-        <text fg="#7f8c8d">
+        <text fg={theme().textMuted}>
           {online() && status()
             ? `${status()!.multiplexer} · every ${status()!.pollIntervalSec}s · ${
                 status()!.nextPollAt ? `next in ${Math.max(0, Math.round((status()!.nextPollAt! - Date.now()) / 1000))}s` : "polling…"
@@ -739,28 +1101,33 @@ export function App(props: AppProps) {
       </box>
 
       <Show when={!online()}>
-        <box border borderColor="#e67e22" padding={1} marginTop={1}>
-          <text fg="#e67e22">
+        <box border borderColor={theme().warning} padding={1} marginTop={1}>
+          <text fg={theme().warning}>
             {starting() ? "Starting Sentinel daemon…" : "Sentinel daemon is not running. Press S (shift+s) to start it."}
           </text>
         </box>
       </Show>
       <Show when={status()?.configError || configError()}>
-        <box border borderColor="#e74c3c" paddingLeft={1} marginTop={1}>
-          <text fg="#e74c3c">Config error (last good config in use): {status()?.configError || configError()}</text>
+        <box border borderColor={theme().error} paddingLeft={1} marginTop={1}>
+          <text fg={theme().error}>Config error (last good config in use): {status()?.configError || configError()}</text>
+        </box>
+      </Show>
+      <Show when={themeError()}>
+        <box border borderColor={theme().error} paddingLeft={1} marginTop={1}>
+          <text fg={theme().error}>Theme error (last good theme in use): {themeError()}</text>
         </box>
       </Show>
 
       <Switch>
         <Match when={view() === "list" || view() === "pick-pr" || view() === "new-watch" || view() === "settings"}>
           <box flexDirection="column" border title=" Watched PRs " marginTop={1} flexGrow={1} paddingLeft={1} paddingRight={1}>
-            <text fg="#7f8c8d" flexShrink={0}>
+            <text fg={theme().textMuted} flexShrink={0}>
               {pad("PR", widths().pr)} {pad("AGENT", widths().agent)} {pad("SESSION", widths().session)}{" "}
               {pad("CHECKED", widths().checked)} {pad("STATUS", widths().status)} REASON
             </text>
             <Show when={listFiltering() || listQuery() !== ""}>
               <box flexDirection="row" height={1} flexShrink={0}>
-                <text fg="#2ecc71">/ </text>
+                <text fg={theme().accent}>/ </text>
                 <Show when={listFiltering()} fallback={<text>{listQuery()}</text>}>
                   <input
                     value={listQuery()}
@@ -776,25 +1143,25 @@ export function App(props: AppProps) {
               </box>
             </Show>
             <Show when={prs().length > 0 && shownPrs().length === 0}>
-              <text fg="#7f8c8d">No watched PRs match "{listQuery()}".</text>
+              <text fg={theme().textMuted}>No watched PRs match "{listQuery()}".</text>
             </Show>
-            <Show when={prs().length > 0} fallback={<text fg="#7f8c8d">No PRs watched. Press n to pick one of your PRs, or hand off from an agent with `sentinel watch &lt;pr&gt;`.</text>}>
+            <Show when={prs().length > 0} fallback={<text fg={theme().textMuted}>No PRs watched. Press n to pick one of your PRs, or hand off from an agent with `sentinel watch &lt;pr&gt;`.</text>}>
               <For each={shownPrs()}>
                 {(pr, i) => (
                   <>
                     <Show when={i() === 0 || prGroup(shownPrs()[i() - 1]!.id) !== prGroup(pr.id)}>
-                      <text fg="#3498db" flexShrink={0} marginTop={i() === 0 ? 0 : 1}>
+                      <text fg={theme().info} flexShrink={0} marginTop={i() === 0 ? 0 : 1}>
                         <b>{prGroup(pr.id)}</b>
                       </text>
                     </Show>
-                    <box flexDirection="row" flexShrink={0} backgroundColor={i() === sel() && !ticketFocus() ? "#2c3e50" : undefined}>
+                    <box flexDirection="row" flexShrink={0} backgroundColor={i() === sel() && !ticketFocus() ? theme().selectionBackground : undefined}>
                     <text>
                       {pad(`  ${prLine(pr)}`, widths().pr)} {pad(pr.agent, widths().agent)}{" "}
                       {pad(pr.session_id.slice(0, 8) + (pr.session?.paused ? " ⏸" : ""), widths().session)}{" "}
                       {pad(ago(pr.last_checked_at), widths().checked)}{" "}
                     </text>
-                    <text fg={STATUS_COLOR[pr.last_status] ?? "#ecf0f1"}>{pad(pr.last_status, widths().status)} </text>
-                    <text fg="#bdc3c7">{pad((pr.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
+                    <text fg={statusColor(theme(), pr.last_status)}>{pad(pr.last_status, widths().status)} </text>
+                    <text fg={theme().textSecondary}>{pad((pr.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
                     </box>
                   </>
                 )}
@@ -805,29 +1172,29 @@ export function App(props: AppProps) {
             <box
               flexDirection="column"
               border
-              borderColor={ticketFocus() ? "#2ecc71" : undefined}
+              borderColor={ticketFocus() ? theme().accent : undefined}
               title={` Jira tickets · label "${status()?.jira?.label ?? ""}" `}
               flexShrink={0}
               paddingLeft={1}
               paddingRight={1}
             >
               <Show when={status()?.jira?.error}>
-                <text fg="#e74c3c">Jira poll failed: {status()!.jira.error}</text>
+                <text fg={theme().error}>Jira poll failed: {status()!.jira.error}</text>
               </Show>
               <Show
                 when={tickets().length > 0}
-                fallback={<text fg="#7f8c8d">No tickets picked up yet. Assign yourself a ticket and add the label to start an agent on it.</text>}
+                fallback={<text fg={theme().textMuted}>No tickets picked up yet. Assign yourself a ticket and add the label to start an agent on it.</text>}
               >
                 <For each={ticketWindow()}>
                   {(t) => (
-                    <box flexDirection="row" flexShrink={0} backgroundColor={ticketFocus() && t === currentTicket() ? "#2c3e50" : undefined}>
+                    <box flexDirection="row" flexShrink={0} backgroundColor={ticketFocus() && t === currentTicket() ? theme().selectionBackground : undefined}>
                       <text>
                         {pad(`${t.key} - ${t.summary ?? ""}`, widths().pr)} {pad("claude", widths().agent)}{" "}
                         {pad(t.session_id.slice(0, 8) + (t.session?.paused ? " ⏸" : ""), widths().session)}{" "}
                         {pad(ago(t.picked_at), widths().checked)}{" "}
                       </text>
-                      <text fg={STATUS_COLOR[t.last_status] ?? "#ecf0f1"}>{pad(t.last_status, widths().status)} </text>
-                      <text fg="#bdc3c7">{pad((t.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
+                      <text fg={statusColor(theme(), t.last_status)}>{pad(t.last_status, widths().status)} </text>
+                      <text fg={theme().textSecondary}>{pad((t.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
                     </box>
                   )}
                 </For>
@@ -839,7 +1206,7 @@ export function App(props: AppProps) {
               <text>
                 {currentTicket()!.url} · session {currentTicket()!.session_id}
               </text>
-              <text fg="#7f8c8d">
+              <text fg={theme().textMuted}>
                 cwd {currentTicket()!.session?.cwd ?? currentTicket()!.cwd} · pane {currentTicket()!.session?.pane_id ?? "none"} · agent{" "}
                 {currentTicket()!.session?.state ?? "?"}
                 {currentTicket()!.session?.paused ? " (paused)" : ""}
@@ -851,7 +1218,7 @@ export function App(props: AppProps) {
               <text>
                 {current()!.url} · session {current()!.session_id}
               </text>
-              <text fg="#7f8c8d">
+              <text fg={theme().textMuted}>
                 cwd {current()!.cwd} · pane {current()!.session?.pane_id ?? "none"} · agent{" "}
                 {current()!.session?.state ?? "?"}
                 {current()!.session?.paused ? " (paused)" : ""}
@@ -860,16 +1227,71 @@ export function App(props: AppProps) {
           </Show>
         </Match>
 
+        <Match when={view() === "repos"}>
+          <box
+            flexDirection="column"
+            border
+            title={` Repos · ${(repoView()?.roots ?? config()?.newWatch.repoRoots ?? []).join(", ")} `}
+            marginTop={1}
+            flexGrow={1}
+            paddingLeft={1}
+            paddingRight={1}
+          >
+            <Show when={repoError()}>
+              <text fg={theme().error}>Could not list repos: {repoError()}</text>
+            </Show>
+            <text fg={theme().textMuted} flexShrink={0}>
+              {repoSummary()}
+            </text>
+            <Show when={repoFiltering() || repoQuery() !== ""}>
+              <box flexDirection="row" height={1} flexShrink={0}>
+                <text fg={theme().accent}>/ </text>
+                <Show when={repoFiltering()} fallback={<text>{repoQuery()}</text>}>
+                  <input
+                    value={repoQuery()}
+                    focused
+                    flexGrow={1}
+                    placeholder="filter by repo, branch, path, PR or ticket"
+                    onInput={(v) => {
+                      setRepoQuery(v);
+                      setRepoSel(0);
+                    }}
+                  />
+                </Show>
+              </box>
+            </Show>
+            <Show when={repoQuery() !== "" && (repoView()?.repos.length ?? 0) > 0 && shownRepos().length === 0}>
+              <text fg={theme().textMuted}>No repos or worktrees match "{repoQuery()}".</text>
+            </Show>
+            <Show when={repoView() && repoView()!.repos.length === 0}>
+              <text fg={theme().textMuted}>
+                No git repositories found two levels under {repoView()!.roots.join(", ")}. Change "New watch: repo roots" in settings (s).
+              </text>
+            </Show>
+            <scrollbox ref={(el: ScrollBoxRenderable) => (repoScroll = el)} flexGrow={1} flexShrink={1} minHeight={0}>
+              <For each={shownRepos()}>
+                {(repo, i) => (
+                  <box flexDirection="column" flexShrink={0} marginTop={i() === 0 ? 0 : 1}>
+                    <Show when={repo.worktrees.length > 0} fallback={repoHeading(repo)}>
+                      <For each={repo.worktrees}>{(wt, j) => worktreeGroup(repo, wt, j() === 0)}</For>
+                    </Show>
+                  </box>
+                )}
+              </For>
+            </scrollbox>
+          </box>
+        </Match>
+
         <Match when={view() === "history"}>
           <scrollbox border title={` History · ${current()?.id ?? ""} `} marginTop={1} flexGrow={1} paddingLeft={1}>
-            <For each={history()} fallback={<text fg="#7f8c8d">No events yet.</text>}>
+            <For each={history()} fallback={<text fg={theme().textMuted}>No events yet.</text>}>
               {(ev) => (
                 <box flexDirection="column" marginBottom={1}>
-                  <text fg="#3498db">
+                  <text fg={theme().info}>
                     {new Date(ev.ts).toLocaleString()} · {ev.kind}
                   </text>
                   <Show when={ev.detail}>
-                    <text fg="#bdc3c7">{JSON.stringify(ev.detail).slice(0, 600)}</text>
+                    <text fg={theme().textSecondary}>{JSON.stringify(ev.detail).slice(0, 600)}</text>
                   </Show>
                 </box>
               )}
@@ -883,9 +1305,9 @@ export function App(props: AppProps) {
         <box position="absolute" top={0} left={0} width="100%" height="100%" zIndex={10} alignItems="center" justifyContent="center">
           <Switch>
             <Match when={view() === "pick-pr"}>
-              <box flexDirection="column" border borderColor="#2ecc71" title=" Watch a PR " backgroundColor={MODAL_BG} width={modalWidth()} height={pickerHeight()} paddingLeft={1} paddingRight={1}>
+              <box flexDirection="column" border borderColor={theme().accent} title=" Watch a PR " backgroundColor={theme().modalBackground} width={modalWidth()} height={pickerHeight()} paddingLeft={1} paddingRight={1}>
                 <box flexDirection="row" height={1}>
-                  <text fg="#2ecc71">filter › </text>
+                  <text fg={theme().accent}>filter › </text>
                   <input
                     value={query()}
                     focused
@@ -899,27 +1321,27 @@ export function App(props: AppProps) {
                 </box>
                 <Switch>
                   <Match when={myPrsError()}>
-                    <text fg="#e74c3c">Could not list your PRs: {myPrsError()}</text>
+                    <text fg={theme().error}>Could not list your PRs: {myPrsError()}</text>
                   </Match>
                   <Match when={myPrs() === null}>
-                    <text fg="#7f8c8d">Loading your open PRs…</text>
+                    <text fg={theme().textMuted}>Loading your open PRs…</text>
                   </Match>
                   <Match when={filtered().length === 0}>
-                    <text fg="#7f8c8d">{myPrs()!.length === 0 ? "You have no open PRs." : "No PRs match the filter."}</text>
+                    <text fg={theme().textMuted}>{myPrs()!.length === 0 ? "You have no open PRs." : "No PRs match the filter."}</text>
                   </Match>
                   <Match when={true}>
-                    <text fg="#7f8c8d">
+                    <text fg={theme().textMuted}>
                       {filtered().length} of {myPrs()!.length} open PRs
                     </text>
                     <For each={pickWindow()}>
                       {(pr) => (
-                        <box flexDirection="row" backgroundColor={pr === filtered()[pickSel()] ? "#2c3e50" : undefined}>
+                        <box flexDirection="row" backgroundColor={pr === filtered()[pickSel()] ? theme().selectionBackground : undefined}>
                           <text>
                             {pad(`${pr.owner}/${pr.repo}`, pickWidths().repo)} {pad(`#${pr.number}`, 7)}{" "}
                           </text>
-                          <text fg="#bdc3c7">{pad(pr.title, pickWidths().title)} </text>
-                          <text fg="#7f8c8d">{pr.isDraft ? "draft " : ""}</text>
-                          <text fg="#3498db">{pr.watched ? "watched" : ""}</text>
+                          <text fg={theme().textSecondary}>{pad(pr.title, pickWidths().title)} </text>
+                          <text fg={theme().textMuted}>{pr.isDraft ? "draft " : ""}</text>
+                          <text fg={theme().info}>{pr.watched ? "watched" : ""}</text>
                         </box>
                       )}
                     </For>
@@ -928,21 +1350,21 @@ export function App(props: AppProps) {
               </box>
             </Match>
             <Match when={view() === "new-watch" && form()}>
-              <box flexDirection="column" border borderColor="#2ecc71" title=" New watch " backgroundColor={MODAL_BG} width={modalWidth()} paddingLeft={1} paddingRight={1} paddingBottom={1}>
+              <box flexDirection="column" border borderColor={theme().accent} title=" New watch " backgroundColor={theme().modalBackground} width={modalWidth()} paddingLeft={1} paddingRight={1} paddingBottom={1}>
                 <text>
                   {form()!.pr.owner}/{form()!.pr.repo} #{form()!.pr.number} · {form()!.pr.title}
                 </text>
-                <text fg="#7f8c8d" marginBottom={1}>
+                <text fg={theme().textMuted} marginBottom={1}>
                   {form()!.pr.url} · Sentinel creates a new claude session for this PR
                 </text>
                 <For each={FORM_FIELDS}>
                   {(field, i) => (
-                    <box flexDirection="row" backgroundColor={i() === formSel() ? "#2c3e50" : undefined}>
-                      <text fg="#7f8c8d">{pad(field.label, 20)} </text>
+                    <box flexDirection="row" backgroundColor={i() === formSel() ? theme().selectionBackground : undefined}>
+                      <text fg={theme().textMuted}>{pad(field.label, 20)} </text>
                       <Show
                         when={formEditing() !== null && formEditing() === field.key}
                         fallback={
-                          <text fg={field.kind === "submit" ? "#2ecc71" : field.kind === "fixed" ? "#7f8c8d" : undefined}>
+                          <text fg={field.kind === "submit" ? theme().accent : field.kind === "fixed" ? theme().textMuted : undefined}>
                             {field.kind === "submit" && submitting() ? "[ Working… ]" : displayField(field.key, form()!)}
                           </text>
                         }
@@ -959,18 +1381,18 @@ export function App(props: AppProps) {
                   )}
                 </For>
                 <Show when={formMsg()}>
-                  <text fg={formMsg()!.error ? "#e74c3c" : "#f1c40f"} marginTop={1}>
+                  <text fg={formMsg()!.error ? theme().error : theme().pending} marginTop={1}>
                     {formMsg()!.text}
                   </text>
                 </Show>
               </box>
             </Match>
             <Match when={view() === "settings"}>
-              <box flexDirection="column" border borderColor="#2ecc71" title={` Settings · ${props.paths.config} `} backgroundColor={MODAL_BG} width={modalWidth()} height={settingsHeight()} paddingLeft={1} paddingRight={1}>
-                <Show when={config()} fallback={<text fg="#e74c3c">Config could not be loaded: {configError()}</text>}>
+              <box flexDirection="column" border borderColor={theme().accent} title={` Settings · ${props.paths.config} `} backgroundColor={theme().modalBackground} width={modalWidth()} height={settingsHeight()} paddingLeft={1} paddingRight={1}>
+                <Show when={config()} fallback={<text fg={theme().error}>Config could not be loaded: {configError()}</text>}>
                   <Show when={showSettingsFilter()}>
                     <box flexDirection="row" height={1}>
-                      <text fg="#2ecc71">/ </text>
+                      <text fg={theme().accent}>/ </text>
                       <Show when={settingsFiltering()} fallback={<text>{settingsQuery()}</text>}>
                         <input
                           value={settingsQuery()}
@@ -986,12 +1408,12 @@ export function App(props: AppProps) {
                     </box>
                   </Show>
                   <Show when={shownFields().length === 0}>
-                    <text fg="#7f8c8d">No settings match "{settingsQuery()}".</text>
+                    <text fg={theme().textMuted}>No settings match "{settingsQuery()}".</text>
                   </Show>
                   <For each={settingsWindow()}>
                     {(field) => (
-                      <box flexDirection="row" height={1} backgroundColor={field === selectedField() ? "#2c3e50" : undefined}>
-                        <text fg="#7f8c8d">{pad(field.label, 38)} </text>
+                      <box flexDirection="row" height={1} backgroundColor={field === selectedField() ? theme().selectionBackground : undefined}>
+                        <text fg={theme().textMuted}>{pad(field.label, 38)} </text>
                         <Show when={editing() !== null && field === selectedField()} fallback={<text>{pad(displayValue(field, config()!), modalWidth() - 44)}</text>}>
                           <input
                             value={editing()!}
@@ -1011,10 +1433,61 @@ export function App(props: AppProps) {
         </box>
       </Show>
 
-      <box height={1} marginTop={1}>
-        <Show when={flash()} fallback={<text fg="#7f8c8d">{footer()}</text>}>
-          <text fg={flash()!.error ? "#e74c3c" : "#2ecc71"}>{flash()!.text}</text>
-        </Show>
+      <Show when={helpOpen()}>
+        <box position="absolute" top={0} left={0} width="100%" height="100%" zIndex={20} alignItems="center" justifyContent="center">
+          <box
+            flexDirection="column"
+            border
+            borderColor={theme().accent}
+            title={` Shortcuts · ${shortcuts().title} `}
+            backgroundColor={theme().modalBackground}
+            width={Math.max(40, Math.min(70, dims().width - 8))}
+            height={helpHeight()}
+            paddingLeft={1}
+            paddingRight={1}
+          >
+            <Show when={showHelpFilter()}>
+              <box flexDirection="row" height={1} flexShrink={0}>
+                <text fg={theme().accent}>/ </text>
+                <text>{helpQuery()}</text>
+                <text fg={theme().accent}>{helpFiltering() ? "▏" : ""}</text>
+              </box>
+            </Show>
+            <scrollbox ref={(el: ScrollBoxRenderable) => (helpScroll = el)} flexGrow={1} minHeight={0}>
+              <Show when={helpRows().length > 0} fallback={<text fg={theme().textMuted}>No shortcuts match "{helpQuery()}".</text>}>
+                <For each={helpRows()}>
+                  {(h, i) => (
+                    <box flexDirection="row" flexShrink={0} marginTop={h.global && !helpRows()[i() - 1]?.global && i() > 0 ? 1 : 0}>
+                      <text fg={theme().accent} flexShrink={0}>
+                        {pad(h.key, 12)}{" "}
+                      </text>
+                      <text fg={h.global ? theme().textMuted : undefined}>{h.label}</text>
+                    </box>
+                  )}
+                </For>
+              </Show>
+            </scrollbox>
+            <text fg={theme().textMuted} flexShrink={0}>
+              {helpFiltering()
+                ? "type to filter by key or action · enter done · esc clear"
+                : helpQuery()
+                  ? "/ change filter · esc clear filter · ? or enter to close"
+                  : "/ filter · esc, ? or enter to close"}
+            </text>
+          </box>
+        </box>
+      </Show>
+
+      <box height={1} marginTop={1} flexDirection="row">
+        <box flexGrow={1} flexShrink={1} minWidth={0} height={1}>
+          <Show when={flash()} fallback={<text fg={theme().textMuted}>{footerLeft()}</text>}>
+            <text fg={flash()!.error ? theme().error : theme().success}>{pad(flash()!.text, footerWidth())}</text>
+          </Show>
+        </box>
+        <text fg={theme().textMuted} flexShrink={0}>
+          {"  "}
+          {hintText(HELP_HINT)}
+        </text>
       </box>
     </box>
   );

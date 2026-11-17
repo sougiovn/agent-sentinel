@@ -41,11 +41,53 @@ Set `jira.enabled` (in `config.json` or the settings screen), then assign yourse
 
 `watch` detects the agent from `$CLAUDE_CODE_SESSION_ID` or `$CODEX_THREAD_ID`, and uses the current directory as the place to resume in. Override with `--agent`, `--session` and `--cwd`. Activity that already exists when a PR is registered counts as seen; pass `--include-existing` to evaluate it.
 
+### Bash completion
+
+```sh
+# Install it for future shells (requires the bash-completion package)
+mkdir -p ~/.local/share/bash-completion/completions
+sentinel completion bash > ~/.local/share/bash-completion/completions/sentinel
+
+# Or load it in the current shell only
+source <(sentinel completion bash)
+```
+
+Completion covers commands, options, the PRs Sentinel is already watching (`watch`, `unwatch`, `check`) and Jira ticket keys (`tickets dismiss`).
+
 ### TUI keys
 
-`↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `t` switch to the Jira tickets list (`o` open, `d` dismiss) · `s` settings · `R` reload config · `S` retry starting the daemon · `q` quit. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
+`↑/↓` select · `/` filter by repo or title · `enter` event history · `o` open in browser · `n` watch one of your PRs · `g` repos and worktrees · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `A` go to the agent (focus its pane, or reopen it in a new tab) · `t` switch to the Jira tickets list (`o` open, `A` go to agent, `d` dismiss) · `s` settings · `R` reload config and theme · `S` retry starting the daemon · `?` list every shortcut for the current screen (`/` filters it) · `q` quit. The footer shows as many shortcuts as fit and always ends with `? help`; `?` works everywhere, even while typing in a filter. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.
+In the repos view (`g`): every git repo found two levels under `newWatch.repoRoots`, with all of its worktrees. Under each worktree are the watched PRs whose session works in it and the Jira tickets tied to it: the ticket's handed-off PR, a branch or directory name containing the ticket key (`CP-123-fix`, `feat/CP-123`), or else the ticket session's directory. `↑/↓` select a worktree, `/` filters by repo, branch, path, PR or ticket (every word must match), `o` opens its PR (or ticket), `r` rescans, `esc` goes back. See [docs/features.md](docs/features.md#repos-view) for the details.
 In settings: `/` filters by name, `enter` edits a field or cycles an enum, and `e` opens a prompt template in `$EDITOR`.
 In the PR picker: type to filter by org, repo, `#number` or title, `↑/↓` to move, `enter` to pick. In the form: `←/→` or `space` changes a value, `e` types a custom model or path, and `enter` on `[ Watch ]` starts the watch.
+
+### Theme
+
+The dashboard's colours live in `theme.json`, created with the defaults when the dashboard first runs. Every key is optional, so you only need the colours you want to change.
+
+```jsonc
+{
+  "text": "#ecf0f1",              // default text, and statuses with no colour
+  "textSecondary": "#bdc3c7",     // PR titles, reasons, event details
+  "textMuted": "#7f8c8d",         // hints, labels, table headers, footer
+  "accent": "#2ecc71",            // title and focused borders
+  "info": "#3498db",              // repo headings, timestamps
+  "success": "#2ecc71",           // success messages
+  "warning": "#e67e22",           // warnings, like the daemon being offline
+  "error": "#e74c3c",             // errors and invalid config
+  "pending": "#f1c40f",           // work-in-progress messages
+  "selectionBackground": "#2c3e50",
+  "modalBackground": "#1e272e",
+  "statuses": {                   // per-status colours, keyed by last_status
+    "no_changes": "#7f8c8d", "no_action": "#95a5a6", "pending": "#7f8c8d",
+    "fix_spawned": "#3498db", "fix_running": "#f1c40f", "spawn_failed": "#e74c3c",
+    "error": "#e74c3c", "queued": "#3498db", "started": "#f1c40f",
+    "in_review": "#2ecc71", "transition_failed": "#e67e22"
+  }
+}
+```
+
+Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `transparent`. The dashboard watches the file and applies edits immediately. Invalid JSON or colours show a banner and keep the last good theme; delete the file to go back to the defaults.
 
 ## How it works
 
@@ -68,6 +110,7 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
 | File | Purpose |
 | --- | --- |
 | `config.json` | Settings. Watched by the daemon; invalid edits are logged and the last good config is kept. |
+| `theme.json` | Dashboard colours. Watched by the TUI; invalid edits keep the last good theme. |
 | `sentinel.db` | SQLite: `prs`, `seen_items`, `pending_items`, `sessions`, `events` (last 50 per PR), `tickets` |
 | `sentinel.sock`, `sentinel.pid`, `sentinel.log` | Daemon socket, pidfile and log |
 | `prompts/` | Fix prompts delivered to agents (pruned after 7 days) |

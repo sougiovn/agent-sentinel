@@ -32,7 +32,7 @@ function keyOf(r: RepoKey): string {
   return `${r.host}/${r.owner}/${r.repo}`.toLowerCase();
 }
 
-async function originOf(run: Exec, dir: string): Promise<string | null> {
+export async function originOf(run: Exec, dir: string): Promise<string | null> {
   const r = await run(["git", "-C", dir, "remote", "get-url", "origin"], { timeoutMs: 5000 });
   return r.code === 0 ? normalizeRemote(r.stdout) : null;
 }
@@ -45,12 +45,16 @@ function isDir(p: string): boolean {
   }
 }
 
-/** Git working trees at depth 0..maxDepth under root (a clone isn't descended into). */
-function findClones(root: string, maxDepth: number): string[] {
+/**
+ * Git working trees at depth 0..maxDepth under root (a clone isn't descended into).
+ * With `mainOnly`, linked worktrees (whose `.git` is a file) are left out.
+ */
+export function findClones(root: string, maxDepth: number, mainOnly = false): string[] {
   const out: string[] = [];
   const walk = (dir: string, depth: number) => {
-    if (existsSync(join(dir, ".git"))) {
-      out.push(dir);
+    const git = join(dir, ".git");
+    if (existsSync(git)) {
+      if (!mainOnly || isDir(git)) out.push(dir);
       return;
     }
     if (depth >= maxDepth) return;
