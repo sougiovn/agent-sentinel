@@ -702,6 +702,27 @@ describe("hc mux", () => {
     expect(hc.calls.filter((c) => c[1] !== "run")).toEqual([]);
   });
 
+  test("paneExists throws when hc fails for a reason other than a gone terminal", async () => {
+    const hc = fakeHc();
+    const fail = (code: number): Exec => async (cmd) => (cmd[1] === "get" ? { code, stdout: "", stderr: "boom" } : hc.exec(cmd));
+    await expect(new HcMux(fail(5)).paneExists("t1")).rejects.toBeInstanceOf(MuxUnavailableError);
+    await expect(new HcMux(fail(1)).paneExists("t1")).rejects.toThrow("hc get t1 exited 1");
+    expect(await new HcMux(fail(11)).paneExists("t1")).toBe(false);
+  });
+
+  test("sendLine times out a send held back by a person's draft", async () => {
+    let timeoutMs: number | undefined;
+    const slow: Exec = async (_cmd, o) => {
+      timeoutMs = o?.timeoutMs;
+      await Bun.sleep(30);
+      return { code: 143, stdout: "", stderr: "" };
+    };
+    await expect(new HcMux(slow, 20).sendLine("t1", "x")).rejects.toThrow("timed out after 0.02s");
+    expect(timeoutMs).toBe(20);
+    const fast: Exec = async () => ({ code: 9, stdout: "", stderr: "blocked on a dialog" });
+    await expect(new HcMux(fast, 1000).sendLine("t1", "x")).rejects.toThrow("blocked on a dialog");
+  });
+
   test("sends a line to the terminal", async () => {
     const hc = fakeHc();
     const mux = new HcMux(hc.exec);
