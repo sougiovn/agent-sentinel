@@ -37,6 +37,9 @@ export interface GhPrView {
   title: string;
   body: string;
   headRefOid: string;
+  /** Computed by GitHub in the background: UNKNOWN until it has been worked out after a push or a base change. */
+  mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  baseRefName?: string;
   statusCheckRollup: GhCheck[] | null;
 }
 
@@ -134,7 +137,7 @@ export class GhCli implements GhClient {
 
   async fetchActivity(ref: PrRef): Promise<PrActivity> {
     const [view, inlineComments, conversationComments, reviews, reviewThreads] = await Promise.all([
-      this.prView(ref, "state,title,body,headRefOid,statusCheckRollup"),
+      this.prView(ref, "state,title,body,headRefOid,mergeable,baseRefName,statusCheckRollup"),
       this.api<GhComment>(ref, `pulls/${ref.number}/comments`),
       this.api<GhComment>(ref, `issues/${ref.number}/comments`),
       this.api<GhComment>(ref, `pulls/${ref.number}/reviews`),

@@ -11,7 +11,7 @@ import type { MyPr, NewWatchDefaults, PrListEntry, RepoEntry, RepoView, RpcMetho
 import { Client } from "../cli/client.ts";
 import { startDaemon as startDaemonProcess } from "../cli/daemon-control.ts";
 import { openUrl as defaultOpenUrl } from "../cli/open-url.ts";
-import { ago, draftState, humanCommentLocation, prGroup, prLine, sortByGroup, type DraftState } from "../cli/format.ts";
+import { ago, draftState, humanCommentLocation, mergeLabel, prGroup, prLine, sortByGroup, type DraftState } from "../cli/format.ts";
 import { cycleField, displayField, FORM_FIELDS, initialForm, watchRequest, type NewWatchForm } from "./new-watch.ts";
 import { filterPrs, filterWatched } from "./pr-filter.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
@@ -958,8 +958,8 @@ export function App(props: AppProps) {
 
   const widths = () => {
     const w = dims().width - 4;
-    const fixed = { agent: 7, session: 10, checked: 10, human: 6, status: 13 };
-    const rest = Math.max(20, w - fixed.agent - fixed.session - fixed.checked - fixed.human - fixed.status - 6);
+    const fixed = { agent: 7, session: 10, checked: 10, human: 6, merge: 8, status: 13 };
+    const rest = Math.max(20, w - fixed.agent - fixed.session - fixed.checked - fixed.human - fixed.merge - fixed.status - 7);
     const pr = Math.min(Math.max(30, Math.floor(rest * 0.6)), 80);
     return { ...fixed, pr, reason: Math.max(10, rest - pr) };
   };
@@ -1268,7 +1268,8 @@ export function App(props: AppProps) {
           <box flexDirection="column" border title={humanTotal() > 0 ? ` Watched PRs · ${humanTotal()} human comment(s) need you ` : " Watched PRs "} marginTop={1} flexGrow={1} paddingLeft={1} paddingRight={1}>
             <text fg={theme().textMuted} flexShrink={0}>
               {pad("PR", widths().pr)} {pad("AGENT", widths().agent)} {pad("SESSION", widths().session)}{" "}
-              {pad("CHECKED", widths().checked)} {pad("HUMAN", widths().human)} {pad("STATUS", widths().status)} REASON
+              {pad("CHECKED", widths().checked)} {pad("HUMAN", widths().human)} {pad("MERGE", widths().merge)}{" "}
+              {pad("STATUS", widths().status)} REASON
             </text>
             <Show when={listFiltering() || listQuery() !== ""}>
               <box flexDirection="row" height={1} flexShrink={0}>
@@ -1307,6 +1308,9 @@ export function App(props: AppProps) {
                     </text>
                     <text fg={(pr.humanOpen ?? 0) > 0 ? theme().warning : theme().textMuted}>
                       {pad((pr.humanOpen ?? 0) > 0 ? `${pr.humanOpen} open` : "-", widths().human)}{" "}
+                    </text>
+                    <text fg={pr.mergeable === "CONFLICTING" ? theme().error : theme().textMuted}>
+                      {pad(mergeLabel(pr), widths().merge)}{" "}
                     </text>
                     <text fg={statusColor(theme(), pr.last_status)}>{pad(pr.last_status, widths().status)} </text>
                     <text fg={theme().textSecondary}>{pad((pr.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
@@ -1432,6 +1436,11 @@ export function App(props: AppProps) {
         </Match>
 
         <Match when={view() === "history"}>
+          <Show when={current()?.mergeable === "CONFLICTING"}>
+            <text fg={theme().error} marginTop={1} flexShrink={0}>
+              Merge conflict with {current()?.base_ref ? `\`${current()!.base_ref}\`` : "the base branch"}. Sentinel resumes the agent once per head commit to resolve it.
+            </text>
+          </Show>
           <Show when={humans().length > 0}>
             <box
               flexDirection="column"

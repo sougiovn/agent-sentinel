@@ -17,6 +17,15 @@ export function describeItem(item: Item): string {
     if (item.logTail) lines.push("Failed log tail:", "```", item.logTail.trimEnd(), "```");
     return lines.join("\n");
   }
+  if (item.kind === "merge_conflict") {
+    const base = item.baseRef ? `\`${item.baseRef}\`` : "the base branch";
+    lines.push(`### [${item.id}] Merge conflict with ${base}`);
+    lines.push(
+      `GitHub reports this PR can't be merged because it conflicts with ${base}.`,
+      `Fetch the latest ${base}, bring it into the PR branch (rebase or merge, whichever the branch already uses), resolve the conflicts, run the tests, and push.`,
+    );
+    return lines.join("\n");
+  }
   const kindLabel =
     item.kind === "inline_comment" ? "Inline review comment" : item.kind === "review" ? "Review" : "PR comment";
   lines.push(`### [${item.id}] ${kindLabel}`);

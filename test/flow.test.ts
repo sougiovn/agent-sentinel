@@ -757,3 +757,57 @@ describe("human comments", () => {
     expect(readFileSync(promptFile, "utf8")).toContain("sentinel draft https://github.com/acme/web/pull/1 <item-id>");
   });
 });
+
+describe("merge conflicts", () => {
+  const view = (t: ReturnType<typeof makeDaemon>) => t.gh.get(ref).view;
+
+  test("a conflict skips the evaluator, is delivered once per head, and UNKNOWN keeps the last state", async () => {
+    const t = await setup();
+    Object.assign(view(t), { mergeable: "CONFLICTING", baseRefName: "main" });
+    await t.daemon.sentinel.tick();
+    expect(t.evaluator.calls).toHaveLength(0);
+    expect(t.store.getPr(ID)!.mergeable).toBe("CONFLICTING");
+    expect(t.store.getPr(ID)!.base_ref).toBe("main");
+    const delivered = t.store.events(ID).find((e) => e.kind === "fix_delivered")!;
+    expect((delivered.detail as { items: string[] }).items).toEqual(["conflict:sha1"]);
+    const prompt = readFileSync(/\$\(cat '([^']+)'\)/.exec(t.mux.allLines()[0]!)![1]!, "utf8");
+    expect(prompt).toContain("Merge conflict with `main`");
+
+    // Base moves on, head unchanged: no repeat. UNKNOWN while GitHub recomputes keeps the last state.
+    Object.assign(view(t), { mergeable: "UNKNOWN" });
+    await t.daemon.sentinel.tick();
+    Object.assign(view(t), { mergeable: "CONFLICTING" });
+    await t.daemon.sentinel.tick();
+    expect(t.store.getPr(ID)!.mergeable).toBe("CONFLICTING");
+    expect(t.store.events(ID).filter((e) => e.kind === "merge_conflict")).toHaveLength(1);
+
+    // A push that doesn't resolve it gets it again; one that does clears it.
+    Object.assign(view(t), { headRefOid: "sha2" });
+    await t.daemon.sentinel.tick();
+    expect(t.store.events(ID).filter((e) => e.kind === "merge_conflict")).toHaveLength(2);
+    Object.assign(view(t), { headRefOid: "sha3", mergeable: "MERGEABLE" });
+    await t.daemon.sentinel.tick();
+    expect(t.store.getPr(ID)!.mergeable).toBe("MERGEABLE");
+  });
+
+  test("a conflict alongside comments goes with what the evaluator flags", async () => {
+    const t = await setup();
+    t.evaluator.next = { shouldFix: true, reason: "bug", items: ["issue:101"] };
+    Object.assign(view(t), { mergeable: "CONFLICTING", baseRefName: "main" });
+    t.gh.comment(ref, { id: 101, body: "bug here" });
+    await t.daemon.sentinel.tick();
+    expect(t.evaluator.calls[0]!.items.map((i) => i.id)).toEqual(["issue:101"]);
+    const delivered = t.store.events(ID).find((e) => e.kind === "fix_delivered")!;
+    expect((delivered.detail as { items: string[] }).items.sort()).toEqual(["conflict:sha1", "issue:101"]);
+  });
+
+  test("a PR already conflicting when watched isn't baselined away", async () => {
+    const t = makeDaemon();
+    t.gh.add(ref, { mergeable: "CONFLICTING", baseRefName: "main" });
+    await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: "/r" });
+    expect(t.store.getPr(ID)!.mergeable).toBe("CONFLICTING");
+    await t.daemon.sentinel.tick();
+    expect(t.store.events(ID).some((e) => e.kind === "merge_conflict")).toBe(true);
+    expect(t.store.humanComments(ID)).toEqual([]);
+  });
+});

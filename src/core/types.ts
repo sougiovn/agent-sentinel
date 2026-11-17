@@ -11,7 +11,7 @@ export type PrStatus =
 
 export type SessionState = "idle" | "busy";
 
-export type ItemKind = "inline_comment" | "conversation_comment" | "review" | "check";
+export type ItemKind = "inline_comment" | "conversation_comment" | "review" | "check" | "merge_conflict";
 
 /** A normalized unit of PR activity Sentinel may act on. */
 export interface Item {
@@ -24,6 +24,8 @@ export interface Item {
   line?: number;
   url?: string;
   createdAt?: string;
+  /** merge_conflict only: the base branch the PR conflicts with. */
+  baseRef?: string;
   /** checks only */
   checkName?: string;
   conclusion?: string;
@@ -43,6 +45,10 @@ export interface PrRow {
   last_reason: string | null;
   /** PR title as of the last poll; null until the first fetch after an upgrade. */
   title: string | null;
+  /** GitHub's last known `mergeable` value (MERGEABLE or CONFLICTING); UNKNOWN reads never overwrite it. */
+  mergeable: string | null;
+  /** The PR's base branch as of the last poll. */
+  base_ref: string | null;
 }
 
 export interface SessionRow {
@@ -108,7 +114,7 @@ export interface HumanCommentRow {
   pr_id: string;
   /** Same id the agent sees in fix prompts, e.g. `inline:123`, `issue:456`, `review:789`. */
   item_id: string;
-  kind: Exclude<ItemKind, "check">;
+  kind: Exclude<ItemKind, "check" | "merge_conflict">;
   author: string | null;
   body: string;
   url: string | null;

@@ -119,9 +119,13 @@ export class Sentinel {
             session: sessionOpts,
           });
           this.d.store.setPrTitle(id, activity.view.title);
+          this.syncMerge(id, activity);
           // Human comments show up in the dashboard even when the rest of the PR is baselined as seen.
           await this.syncHumanComments(id, ref, activity, now);
-          if (created && !req.includeExisting) this.d.store.markSeen(id, normalize(activity));
+          // A conflict is a current state, not history, so it stays out of the baseline and gets delivered.
+          if (created && !req.includeExisting) {
+            this.d.store.markSeen(id, normalize(activity).filter((i) => i.kind !== "merge_conflict"));
+          }
           this.d.store.addEvent(
             id,
             created ? "registered" : "reassigned",
@@ -197,6 +201,7 @@ export class Sentinel {
     }
 
     if (activity.view.title !== pr.title) store.setPrTitle(id, activity.view.title);
+    this.syncMerge(id, activity);
     await this.syncHumanComments(id, ref, activity, now);
 
     const fresh = newItems(normalize(activity), store.seenIds(id), await this.filterOptions(ref));
@@ -209,26 +214,45 @@ export class Sentinel {
     await this.attachLogTails(ref, fresh);
     store.addEvent(id, "new_items", { items: fresh.map((i) => i.id) }, now);
 
-    let verdict;
-    try {
-      verdict = await evaluator.evaluate({ prUrl: pr.url, title: activity.view.title, body: activity.view.body, items: fresh });
-    } catch (e) {
-      this.fail(pr, `Evaluation failed: ${(e as Error).message}`, now);
+    // A conflict always needs the agent, so it skips the evaluator.
+    const conflicts = fresh.filter((i) => i.kind === "merge_conflict");
+    const rest = fresh.filter((i) => i.kind !== "merge_conflict");
+    const conflictReason = conflicts.length ? `Merge conflict with ${conflicts[0]!.baseRef ?? "the base branch"}` : "";
+
+    let verdict = null;
+    if (rest.length) {
+      try {
+        verdict = await evaluator.evaluate({ prUrl: pr.url, title: activity.view.title, body: activity.view.body, items: rest });
+      } catch (e) {
+        this.fail(pr, `Evaluation failed: ${(e as Error).message}`, now);
+        return;
+      }
+      store.addEvent(id, "evaluated", verdict, now);
+    }
+    store.markSeen(id, verdict ? fresh : conflicts);
+    if (conflicts.length) store.addEvent(id, "merge_conflict", { items: conflicts.map((i) => i.id) }, now);
+
+    const flagged: Item[] = [...conflicts];
+    if (verdict?.shouldFix) {
+      const wanted = new Set(verdict.items);
+      const picked = wanted.size ? rest.filter((i) => wanted.has(i.id)) : rest;
+      flagged.push(...(picked.length ? picked : rest));
+    }
+    if (flagged.length === 0) {
+      store.setPrStatus(id, "no_action", verdict?.reason ?? null, now);
       return;
     }
 
-    store.markSeen(id, fresh);
-    store.addEvent(id, "evaluated", verdict, now);
-    if (!verdict.shouldFix) {
-      store.setPrStatus(id, "no_action", verdict.reason, now);
-      return;
-    }
-
-    const wanted = new Set(verdict.items);
-    const flagged = wanted.size ? fresh.filter((i) => wanted.has(i.id)) : fresh;
-    store.addPending(id, pr.session_id, flagged.length ? flagged : fresh, verdict.reason, now);
-    store.setPrStatus(id, "fix_spawned", `Queued: ${verdict.reason}`, now);
+    const reason = [conflictReason, verdict?.shouldFix ? verdict.reason : ""].filter(Boolean).join(". ");
+    store.addPending(id, pr.session_id, flagged, reason, now);
+    store.setPrStatus(id, "fix_spawned", `Queued: ${reason}`, now);
     await dispatcher.dispatch(pr.session_id);
+  }
+
+  /** Keeps the last known mergeability; GitHub's UNKNOWN means it hasn't been worked out yet. */
+  private syncMerge(id: string, activity: PrActivity) {
+    const { mergeable, baseRefName } = activity.view;
+    if (mergeable && mergeable !== "UNKNOWN") this.d.store.setPrMerge(id, mergeable, baseRefName ?? null);
   }
 
   private async syncHumanComments(id: string, ref: PrRef, activity: PrActivity, now: number) {

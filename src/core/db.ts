@@ -100,6 +100,10 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (pr_id, item_id)
   );
   `,
+  `
+  ALTER TABLE prs ADD COLUMN mergeable TEXT;
+  ALTER TABLE prs ADD COLUMN base_ref TEXT;
+  `,
 ];
 
 export const EVENTS_PER_PR = 50;
@@ -192,6 +196,10 @@ export class Store {
 
   setPrTitle(id: string, title: string) {
     this.db.query("UPDATE prs SET title = $t WHERE id = $id").run({ id, t: title });
+  }
+
+  setPrMerge(id: string, mergeable: string, baseRef: string | null) {
+    this.db.query("UPDATE prs SET mergeable = $m, base_ref = $b WHERE id = $id").run({ id, m: mergeable, b: baseRef });
   }
 
   setPrStatus(id: string, status: PrStatus, reason: string | null, checkedAt?: number) {
@@ -356,7 +364,7 @@ export class Store {
     const keep = new Set(items.map((i) => i.id));
     this.db.transaction(() => {
       for (const it of items) {
-        if (it.kind === "check") continue;
+        if (it.kind === "check" || it.kind === "merge_conflict") continue;
         upsert.run({
           p: prId,
           i: it.id,

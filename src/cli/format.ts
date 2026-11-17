@@ -57,6 +57,11 @@ export function formatStatus(st: StatusInfo): string {
   return lines.join("\n");
 }
 
+/** "conflict" when GitHub last reported the PR conflicting with its base, "ok" when mergeable, "-" when not known yet. */
+export function mergeLabel(p: { mergeable?: string | null }): string {
+  return p.mergeable === "CONFLICTING" ? "conflict" : p.mergeable === "MERGEABLE" ? "ok" : "-";
+}
+
 export function formatList(list: PrListEntry[]): string {
   if (list.length === 0) return "No PRs watched.";
   const rows = list.map((p) => [
@@ -65,10 +70,11 @@ export function formatList(list: PrListEntry[]): string {
     p.session_id.slice(0, 8),
     ago(p.last_checked_at),
     String(p.humanOpen ?? 0),
+    mergeLabel(p),
     p.last_status,
     (p.last_reason ?? "").replace(/\s+/g, " ").slice(0, 60),
   ]);
-  const head = ["PR", "AGENT", "SESSION", "CHECKED", "HUMAN", "STATUS", "REASON"];
+  const head = ["PR", "AGENT", "SESSION", "CHECKED", "HUMAN", "MERGE", "STATUS", "REASON"];
   const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
   const fmt = (r: string[]) => r.map((c, i) => c.padEnd(widths[i]!)).join("  ").trimEnd();
   return [fmt(head), ...rows.map(fmt)].join("\n");

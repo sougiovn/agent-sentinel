@@ -336,12 +336,16 @@ describe("human comment formatting", () => {
       last_status: "no_changes" as const,
       last_reason: null,
       title: "t",
+      mergeable: "CONFLICTING",
+      base_ref: "main",
       session: null,
       humanOpen: 2,
     };
     const [head, line] = formatList([pr]).split("\n");
     expect(head).toContain("HUMAN");
     expect(line!.split(/\s{2,}/)).toContain("2");
+    expect(head).toContain("MERGE");
+    expect(line!.split(/\s{2,}/)).toContain("conflict");
   });
 });
 
@@ -611,6 +615,8 @@ describe("store migrations", () => {
       DROP TABLE tickets;
       DROP TABLE human_comments;
       ALTER TABLE prs DROP COLUMN title;
+      ALTER TABLE prs DROP COLUMN mergeable;
+      ALTER TABLE prs DROP COLUMN base_ref;
       ALTER TABLE sessions DROP COLUMN model;
       ALTER TABLE sessions DROP COLUMN effort;
       ALTER TABLE sessions DROP COLUMN started;
@@ -621,6 +627,7 @@ describe("store migrations", () => {
     old.close();
     const store = new Store(file);
     expect(store.getPr("github.com/a/b#1")!.title).toBeNull();
+    expect(store.getPr("github.com/a/b#1")!.mergeable).toBeNull();
     const s = store.getSession("s")!;
     expect([s.model, s.effort, s.started]).toEqual([null, null, 1]);
     expect(store.humanComments("github.com/a/b#1")).toEqual([]);

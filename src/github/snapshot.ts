@@ -40,6 +40,21 @@ function checkItem(c: GhCheck, headSha: string): Item | null {
   };
 }
 
+/**
+ * A conflict with the base branch, keyed by head commit: it's delivered once per head, so a push that
+ * doesn't resolve it gets it again, while the base moving on under an unchanged head doesn't repeat it.
+ */
+export function conflictItem(activity: PrActivity): Item | null {
+  const v = activity.view;
+  if (v.mergeable !== "CONFLICTING") return null;
+  return {
+    id: `conflict:${v.headRefOid}`,
+    kind: "merge_conflict",
+    baseRef: v.baseRefName,
+    body: `This PR has merge conflicts with its base branch${v.baseRefName ? ` \`${v.baseRefName}\`` : ""}.`,
+  };
+}
+
 /** All items currently present on the PR, before filtering. */
 export function normalize(activity: PrActivity): Item[] {
   const items: Item[] = [];
@@ -53,6 +68,8 @@ export function normalize(activity: PrActivity): Item[] {
     const it = checkItem(c, activity.view.headRefOid);
     if (it) items.push(it);
   }
+  const conflict = conflictItem(activity);
+  if (conflict) items.push(conflict);
   return items;
 }
 
@@ -78,7 +95,7 @@ export function isBot(item: Pick<Item, "author" | "authorType">): boolean {
 
 /** Comments and reviews by humans, other than ignored authors. An author that can't be identified counts as human. */
 export function humanItems(all: Item[], opts: FilterOptions): Item[] {
-  return all.filter((i) => i.kind !== "check" && !isBot(i) && isRelevant(i, opts));
+  return all.filter((i) => i.kind !== "check" && i.kind !== "merge_conflict" && !isBot(i) && isRelevant(i, opts));
 }
 
 /** Item ids (`inline:<id>`) of inline comments whose review thread is resolved on GitHub. */
