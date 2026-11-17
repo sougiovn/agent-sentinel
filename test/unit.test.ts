@@ -9,7 +9,7 @@ import { draftState, formatHumanComments, formatList, humanCommentLocation, merg
 import type { HumanCommentRow } from "../src/core/types.ts";
 import { DaemonUnavailableError, type Client } from "../src/cli/client.ts";
 import { stopDaemon } from "../src/cli/daemon-control.ts";
-import { ClaudeEvaluator, evaluatorArgs, scrubbedAgentEnv } from "../src/evaluator/evaluator.ts";
+import { ClaudeEvaluator, EvaluatorError, evaluatorArgs, scrubbedAgentEnv } from "../src/evaluator/evaluator.ts";
 import { renderFixPrompt, rexNamingNote } from "../src/evaluator/prompt.ts";
 import { humanItems, newItems, normalize, resolvedInlineIds } from "../src/github/snapshot.ts";
 import { claudeHookSettings, launchCommand, sq, writeClaudeHookSettings } from "../src/spawn/launcher.ts";
@@ -255,6 +255,15 @@ describe("evaluator args", () => {
     );
     await expect(ev.evaluate({ prUrl: "https://x/1", title: "t", body: "", items: [] })).rejects.toThrow("Evaluator failed");
   });
+  test("a failed run still reports what it cost", async () => {
+    const ev = new ClaudeEvaluator(
+      () => ({ model: "sonnet", maxBudgetUsd: 0.1, cwd: "/" }),
+      async () => ({ code: 1, stdout: JSON.stringify({ type: "result", is_error: true, subtype: "error_max_budget_usd", total_cost_usd: 0.12 }), stderr: "" }),
+    );
+    const err = await ev.evaluate({ prUrl: "https://x/1", title: "t", body: "", items: [] }).catch((e) => e);
+    expect(err).toBeInstanceOf(EvaluatorError);
+    expect(err.costUsd).toBe(0.12);
+  });
   test("scrubs inherited agent env but keeps auth", () => {
     const out = scrubbedAgentEnv({ CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "x", CLAUDE_CODE_OAUTH_TOKEN: "t", PATH: "/bin" });
     expect(Object.keys(out).sort()).toEqual(["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"]);
@@ -359,6 +368,8 @@ describe("human comment formatting", () => {
       title: "t",
       mergeable: "CONFLICTING",
       base_ref: "main",
+      eval_cost_usd: 0,
+      eval_count: 0,
       session: null,
       humanOpen: 2,
     };
@@ -696,6 +707,10 @@ describe("store migrations", () => {
       ALTER TABLE sessions DROP COLUMN started;
       ALTER TABLE sessions DROP COLUMN awaiting_ack_since;
       ALTER TABLE sessions DROP COLUMN awaiting_ack;
+      ALTER TABLE prs DROP COLUMN eval_cost_usd;
+      ALTER TABLE prs DROP COLUMN eval_count;
+      ALTER TABLE sessions DROP COLUMN eval_cost_usd;
+      ALTER TABLE sessions DROP COLUMN eval_count;
       UPDATE meta SET value = '1' WHERE key = 'schema_version';
       INSERT INTO prs (id, url, agent, session_id, cwd, registered_at) VALUES ('github.com/a/b#1', 'u', 'claude', 's', '/r', 1);
       INSERT INTO sessions (session_id, agent, cwd) VALUES ('s', 'claude', '/r');
@@ -707,6 +722,7 @@ describe("store migrations", () => {
     expect(store.getPr("github.com/a/b#1")!.base_ref).toBeNull();
     const s = store.getSession("s")!;
     expect([s.model, s.effort, s.started, s.awaiting_ack_since, s.awaiting_ack]).toEqual([null, null, 1, null, null]);
+    expect([s.eval_cost_usd, s.eval_count, store.getPr("github.com/a/b#1")!.eval_cost_usd]).toEqual([0, 0, 0]);
     expect(store.humanComments("github.com/a/b#1")).toEqual([]);
     expect(store.openHumanCounts().size).toBe(0);
     store.close();

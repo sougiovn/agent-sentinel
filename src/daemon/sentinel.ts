@@ -224,9 +224,12 @@ export class Sentinel {
       try {
         verdict = await evaluator.evaluate({ prUrl: pr.url, title: activity.view.title, body: activity.view.body, items: rest });
       } catch (e) {
+        const cost = (e as { costUsd?: number }).costUsd;
+        if (cost !== undefined) store.recordEvalCost(id, pr.session_id, cost);
         this.fail(pr, `Evaluation failed: ${(e as Error).message}`, now);
         return;
       }
+      store.recordEvalCost(id, pr.session_id, verdict.costUsd ?? 0);
       store.addEvent(id, "evaluated", verdict, now);
     }
     store.markSeen(id, verdict ? fresh : conflicts);

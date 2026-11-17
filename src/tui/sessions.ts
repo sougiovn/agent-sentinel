@@ -1,5 +1,5 @@
 import { prGroup, prLine } from "../cli/format.ts";
-import type { SessionRow } from "../core/types.ts";
+import type { EventRow, SessionRow } from "../core/types.ts";
 import type { PrListEntry, TicketListEntry } from "../daemon/protocol.ts";
 
 export const MULTI_REPO_GROUP = "Multiple repositories";
@@ -114,3 +114,68 @@ export function sessionSummary(e: SessionEntry): string {
   return [e.prs.length ? n(e.prs.length, "PR") : "", e.tickets.length ? n(e.tickets.length, "ticket") : ""].filter(Boolean).join(" · ");
 }
 
+/** `$0.0123` under a dollar, since a single evaluator run costs cents; `$1.23` from a dollar up. */
+export function formatUsd(n: number): string {
+  return `$${n === 0 ? "0.00" : n < 1 ? n.toFixed(4) : n.toFixed(2)}`;
+}
+
+/** What the evaluator has cost the session: its own running total, which outlives merged PRs. */
+export function sessionEvalCost(e: SessionEntry): { usd: number; runs: number } {
+  if (e.session) return { usd: e.session.eval_cost_usd ?? 0, runs: e.session.eval_count ?? 0 };
+  return {
+    usd: e.prs.reduce((n, p) => n + (p.eval_cost_usd ?? 0), 0),
+    runs: e.prs.reduce((n, p) => n + (p.eval_count ?? 0), 0),
+  };
+}
+
+/** The PRs whose history the details pane shows: the selected PR, a ticket's handed-off PR, or every PR of the session. */
+export function historyPrIds(l: SessionLine): string[] {
+  if (l.kind === "pr") return [l.pr.id];
+  if (l.kind === "ticket" && l.ticket.pr_id && l.entry.prs.some((p) => p.id === l.ticket.pr_id)) return [l.ticket.pr_id];
+  return l.entry.prs.map((p) => p.id);
+}
+
+export interface SessionEvent {
+  prId: string;
+  ev: EventRow;
+}
+
+/** Events of several PRs, newest first. */
+export function mergeHistory(byPr: Record<string, EventRow[]>): SessionEvent[] {
+  return Object.entries(byPr)
+    .flatMap(([prId, evs]) => evs.map((ev) => ({ prId, ev })))
+    .sort((a, b) => b.ev.ts - a.ev.ts || b.ev.id - a.ev.id);
+}
+
+const count = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
+
+/** One readable line for an event's detail. */
+export function eventSummary(ev: EventRow): string {
+  const d = (ev.detail ?? {}) as Record<string, unknown>;
+  const items = Array.isArray(d.items) ? d.items.length : 0;
+  switch (ev.kind) {
+    case "evaluated": {
+      const cost = typeof d.costUsd === "number" ? ` · ${formatUsd(d.costUsd)}` : "";
+      const verdict = d.shouldFix ? `fix ${count(items, "item")}` : "no action";
+      return `${verdict}: ${String(d.reason ?? "")}${cost}`;
+    }
+    case "new_items":
+      return count(items, "new item");
+    case "fix_delivered":
+      return `delivered ${count(items, "item")} to pane ${String(d.pane ?? "?")}`;
+    case "merge_conflict":
+      return "merge conflict with the base branch";
+    case "registered":
+    case "reassigned":
+      return `session ${String(d.session ?? "").slice(0, 8)} · ${String(d.cwd ?? "")}`;
+    case "error":
+    case "spawn_failed":
+      return String(d.error ?? "");
+    case "comment_resolved":
+    case "comment_reopened":
+    case "draft_recorded":
+      return String(d.item ?? "");
+    default:
+      return ev.detail == null ? "" : JSON.stringify(ev.detail);
+  }
+}

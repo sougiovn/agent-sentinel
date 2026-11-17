@@ -5,6 +5,7 @@ import { parsePrRef } from "../src/core/pr-ref.ts";
 import { join } from "node:path";
 import { defaultConfig, saveConfig } from "../src/core/config.ts";
 import { fakeGit, makeDaemon } from "./fakes.ts";
+import { EvaluatorError } from "../src/evaluator/evaluator.ts";
 
 const PR = "acme/web#1";
 const ID = "github.com/acme/web#1";
@@ -88,6 +89,20 @@ describe("poll → evaluate → spawn", () => {
     expect(t.store.getPr(ID)!.last_status).toBe("no_action");
     await t.daemon.sentinel.tick();
     expect(t.evaluator.calls).toHaveLength(1);
+  });
+
+  test("evaluator cost adds up on the PR and its session, failed runs included", async () => {
+    const t = await setup();
+    t.evaluator.next = { shouldFix: false, reason: "LGTM", items: [], costUsd: 0.02 };
+    t.gh.comment(ref, { id: 101, body: "LGTM" });
+    await t.daemon.sentinel.tick();
+    t.evaluator.next = new EvaluatorError("Evaluator failed (error_max_budget_usd)", 0.05);
+    t.gh.comment(ref, { id: 102, body: "nit" });
+    await t.daemon.sentinel.tick();
+    const pr = t.store.getPr(ID)!;
+    expect([pr.eval_count, pr.eval_cost_usd.toFixed(2)]).toEqual([2, "0.07"]);
+    const s = t.store.getSession(pr.session_id)!;
+    expect([s.eval_count, s.eval_cost_usd.toFixed(2)]).toEqual([2, "0.07"]);
   });
 
   test("only flagged items are delivered", async () => {

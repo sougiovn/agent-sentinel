@@ -909,6 +909,7 @@ test("TUI sessions view (v): sessions by repo with their PRs and tickets, and ac
   d.jira.add("CP-9", { summary: "Rate limit exports" });
   await d.daemon.runTicketPoll();
   const ticketSession = d.store.getTicket("CP-9")!.session_id;
+  d.store.recordEvalCost("github.com/acme/web#12", "s1", 0.0123);
   const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
   const opened: string[] = [];
   const t = await testRender(() => <App paths={d.paths} autoStart={false} client={client} openUrl={(u) => opened.push(u)} />, { width: 150, height: 34 });
@@ -942,11 +943,36 @@ test("TUI sessions view (v): sessions by repo with their PRs and tickets, and ac
   t.mockInput.pressKey("o");
   await frame();
   expect(opened).toEqual(["https://github.com/acme/web/pull/12"]);
-  t.mockInput.pressEnter(); // PR details
+  t.mockInput.pressEnter(); // expands the session details
+  f = await frame();
+  expect(f).toContain("Session s1 · paused");
+  expect(f).toContain("Evaluator spend $0.0123 over 1 run");
+  expect(f).toContain("PRs · 1");
+  expect(f).toContain("▸ #12 - Fix login redirect");
+  expect(f).toContain("eval $0.0123 · 1×");
+  expect(f).toContain("Tickets · 0");
+  expect(f).toContain("History · #12");
+  expect(f).toContain("registered");
+  expect(f).toContain("Sessions · 3"); // the list stays on the top half
+  expect(f).not.toContain("History · github.com"); // not the full-page history
+  t.mockInput.pressArrow("down"); // s2: the details follow the selection
+  f = await frame();
+  expect(f).toContain("Session s2");
+  expect(f).toContain("PRs · 2");
+  expect(f).toContain("History · 2 PRs");
+  t.mockInput.pressKey("h");
+  f = await frame();
+  expect(f).toContain("Select one of the session's PRs");
+  t.mockInput.pressArrow("up");
+  t.mockInput.pressKey("h"); // full-page history of #12
   f = await frame();
   expect(f).toContain("History · github.com/acme/web#12");
-  t.mockInput.pressEscape();
-  await frame();
+  t.mockInput.pressEscape(); // back to the sessions view, details still open
+  f = await frame();
+  expect(f).toContain("Session s1");
+  t.mockInput.pressEscape(); // closes the details
+  f = await frame();
+  expect(f).not.toContain("Evaluator spend");
 
   t.mockInput.pressKey("/");
   await frame();

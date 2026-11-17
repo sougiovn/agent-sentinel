@@ -49,6 +49,10 @@ export interface PrRow {
   mergeable: string | null;
   /** The PR's base branch as of the last poll. */
   base_ref: string | null;
+  /** What the evaluator has cost on this PR so far, in USD. */
+  eval_cost_usd: number;
+  /** How many times the evaluator ran on this PR. */
+  eval_count: number;
 }
 
 export interface SessionRow {
@@ -74,6 +78,10 @@ export interface SessionRow {
   awaiting_ack_since: number | null;
   /** JSON {@link AwaitingAck}: what that delivery carried, rolled back if the agent never starts. */
   awaiting_ack: string | null;
+  /** What the evaluator has cost on this session's PRs so far, in USD, including PRs no longer watched. */
+  eval_cost_usd: number;
+  /** How many times the evaluator ran on this session's PRs. */
+  eval_count: number;
 }
 
 /** A delivery the agent hasn't confirmed with a hook signal yet. */

@@ -1,6 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import type { PrListEntry, TicketListEntry } from "../src/daemon/protocol.ts";
-import { buildSessionGroups, filterSessionGroups, MULTI_REPO_GROUP, NO_PR_GROUP, sessionLines, sessionState, sessionSummary } from "../src/tui/sessions.ts";
+import type { EventRow, SessionRow } from "../src/core/types.ts";
+import {
+  buildSessionGroups,
+  eventSummary,
+  filterSessionGroups,
+  formatUsd,
+  historyPrIds,
+  mergeHistory,
+  MULTI_REPO_GROUP,
+  NO_PR_GROUP,
+  sessionEvalCost,
+  sessionLines,
+  sessionState,
+  sessionSummary,
+} from "../src/tui/sessions.ts";
 
 const pr = (id: string, session_id: string, registered_at = 1, title = "t"): PrListEntry =>
   ({ id, session_id, registered_at, title, agent: "claude", session: null, humanOpen: 0, last_status: "no_action" }) as unknown as PrListEntry;
@@ -55,5 +69,48 @@ describe("session groups", () => {
     expect(sessionState(row({ state: "busy" }))).toBe("busy");
     expect(sessionState(row({ paused: 1 }))).toBe("paused");
     expect(sessionState(row({ agent_running: 0 }))).toBe("idle · not running");
+  });
+});
+
+describe("session details", () => {
+  const groups = buildSessionGroups(
+    [pr("github.com/acme/web#12", "s1"), pr("github.com/acme/web#14", "s1")],
+    [ticket("CP-7", "s1", 1, "github.com/acme/web#14"), ticket("CP-8", "s1")],
+  );
+  const lines = sessionLines(groups);
+  const line = (key: string) => lines.find((l) => l.key === key)!;
+
+  test("history covers the selected PR, a ticket's handed-off PR, or the whole session", () => {
+    expect(historyPrIds(line("s:s1"))).toEqual(["github.com/acme/web#12", "github.com/acme/web#14"]);
+    expect(historyPrIds(line("p:github.com/acme/web#12"))).toEqual(["github.com/acme/web#12"]);
+    expect(historyPrIds(line("t:CP-7"))).toEqual(["github.com/acme/web#14"]);
+    expect(historyPrIds(line("t:CP-8"))).toEqual(["github.com/acme/web#12", "github.com/acme/web#14"]);
+  });
+
+  test("merges PR histories newest first", () => {
+    const ev = (id: number, ts: number): EventRow => ({ id, ts, pr_id: "", kind: "k", detail: null });
+    const merged = mergeHistory({ a: [ev(3, 30), ev(1, 10)], b: [ev(2, 20)] });
+    expect(merged.map((m) => [m.prId, m.ev.id])).toEqual([["a", 3], ["b", 2], ["a", 1]]);
+  });
+
+  test("evaluator spend comes from the session's running total, or its PRs without a session row", () => {
+    const e = groups[0]!.sessions[0]!;
+    expect(sessionEvalCost({ ...e, session: { eval_cost_usd: 0.5, eval_count: 7 } as SessionRow })).toEqual({ usd: 0.5, runs: 7 });
+    const prs = e.prs.map((p, i) => ({ ...p, eval_cost_usd: 0.01 * (i + 1), eval_count: 1 }));
+    const c = sessionEvalCost({ ...e, session: null, prs });
+    expect([c.usd.toFixed(2), c.runs]).toEqual(["0.03", 2]);
+  });
+
+  test("formats costs with cents precision for small amounts", () => {
+    expect([formatUsd(0), formatUsd(0.0123), formatUsd(0.5), formatUsd(12.345)]).toEqual(["$0.00", "$0.0123", "$0.5000", "$12.35"]);
+  });
+
+  test("summarizes events in one line", () => {
+    const ev = (kind: string, detail: unknown): EventRow => ({ id: 1, ts: 1, pr_id: "", kind, detail });
+    expect(eventSummary(ev("evaluated", { shouldFix: true, reason: "bug", items: ["a", "b"], costUsd: 0.02 }))).toBe("fix 2 items: bug · $0.0200");
+    expect(eventSummary(ev("evaluated", { shouldFix: false, reason: "LGTM", items: [] }))).toBe("no action: LGTM");
+    expect(eventSummary(ev("new_items", { items: ["a"] }))).toBe("1 new item");
+    expect(eventSummary(ev("error", { error: "boom" }))).toBe("boom");
+    expect(eventSummary(ev("agent_stop", null))).toBe("");
   });
 });

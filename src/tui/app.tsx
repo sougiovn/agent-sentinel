@@ -1,5 +1,5 @@
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
-import { createEffect, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,7 +12,20 @@ import { Client } from "../cli/client.ts";
 import { startDaemon as startDaemonProcess } from "../cli/daemon-control.ts";
 import { openUrl as defaultOpenUrl } from "../cli/open-url.ts";
 import { ago, draftState, humanCommentLocation, mergeLabel, prGroup, prLine, sortByGroup, type DraftState } from "../cli/format.ts";
-import { buildSessionGroups, filterSessionGroups, MULTI_REPO_GROUP, sessionLines, sessionState, sessionSummary, type SessionLine } from "./sessions.ts";
+import {
+  buildSessionGroups,
+  eventSummary,
+  filterSessionGroups,
+  formatUsd,
+  historyPrIds,
+  mergeHistory,
+  MULTI_REPO_GROUP,
+  sessionEvalCost,
+  sessionLines,
+  sessionState,
+  sessionSummary,
+  type SessionLine,
+} from "./sessions.ts";
 import { cycleField, displayField, FORM_FIELDS, initialForm, watchRequest, type NewWatchForm } from "./new-watch.ts";
 import { filterPrs, filterWatched } from "./pr-filter.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
@@ -120,6 +133,30 @@ export function App(props: AppProps) {
     const l = currentLine();
     return sessionMode() && l?.kind === "session" ? l.entry : undefined;
   };
+  /** The sessions view's details pane is expanded to half the page (enter toggles it). */
+  const [sessionDetails, setSessionDetails] = createSignal(false);
+  /** Events of every PR of the session shown in the expanded details pane, by PR id. */
+  const [sessionEvents, setSessionEvents] = createSignal<Record<string, EventRow[]>>({});
+  const detailsOpen = () => sessionMode() && sessionDetails() && !!currentLine();
+  /** The PRs whose events the details pane loads; a string so moving inside one session doesn't reload. */
+  const detailsPrKey = createMemo(() => (detailsOpen() ? currentLine()!.entry.prs.map((p) => p.id).join(" ") : ""));
+  const loadSessionEvents = async (ids: string[]) => {
+    const evs = await Promise.all(ids.map((id) => client.call("history", { pr: id }).catch(() => [] as EventRow[])));
+    if (ids.join(" ") === detailsPrKey()) setSessionEvents(Object.fromEntries(ids.map((id, i) => [id, evs[i]!])));
+  };
+  createEffect(() => {
+    const key = detailsPrKey();
+    setSessionEvents({});
+    if (key) void loadSessionEvents(key.split(" "));
+  });
+  /** The details pane's history: the selected PR's, a ticket's handed-off PR's, or the whole session's. */
+  const detailsHistory = () => {
+    const l = currentLine();
+    if (!l) return [];
+    const ids = new Set(historyPrIds(l));
+    const all = sessionEvents();
+    return mergeHistory(Object.fromEntries(Object.entries(all).filter(([id]) => ids.has(id))));
+  };
   /** A ticket has the selection, so the ticket keys apply. */
   const ticketActive = () => (sessionMode() ? currentLine()?.kind === "ticket" : ticketFocus());
   const showTickets = () => !!status()?.jira?.enabled || tickets().length > 0;
@@ -188,6 +225,7 @@ export function App(props: AppProps) {
   const selectedWorktree = () => allWorktrees()[repoSel()];
   let repoScroll: ScrollBoxRenderable | undefined;
   let sessionScroll: ScrollBoxRenderable | undefined;
+  let detailsScroll: ScrollBoxRenderable | undefined;
   createEffect(() => {
     const i = lineIndex();
     if (view() === "list" && sessionMode()) sessionScroll?.scrollChildIntoView(`sess-line-${i}`, { align: "nearest" });
@@ -251,6 +289,7 @@ export function App(props: AppProps) {
       else if (ticketSel() >= ts.length) setTicketSel(Math.max(0, ts.length - 1));
       if (ts.length === 0) setTicketFocus(false);
       if (view() === "history" && detailsId) await loadDetails(detailsId).catch(() => {});
+      if (detailsPrKey()) await loadSessionEvents(detailsPrKey().split(" "));
       const shown = shownPrs();
       const kept = selectedId ? shown.findIndex((p) => p.id === selectedId) : -1;
       if (kept >= 0) setSel(kept);
@@ -670,6 +709,10 @@ export function App(props: AppProps) {
         setListFiltering(true);
         return;
       }
+      if (!confirmDelete() && !confirmDismiss() && key.name === "escape" && detailsOpen()) {
+        setSessionDetails(false);
+        return;
+      }
       if (!confirmDelete() && key.name === "escape" && listQuery()) {
         setListQuery("");
         setSel(0);
@@ -697,6 +740,10 @@ export function App(props: AppProps) {
       }
       if (sessionMode() && !confirmDelete()) {
         const l = currentLine();
+        if (detailsOpen() && key.shift && (key.name === "j" || key.name === "k")) {
+          detailsScroll?.scrollBy(key.name === "k" ? -1 : 1);
+          return;
+        }
         switch (key.name) {
           case "up":
           case "k":
@@ -706,6 +753,24 @@ export function App(props: AppProps) {
           case "j":
             moveLine(1);
             return;
+          case "return":
+            if (l) setSessionDetails((o) => !o);
+            return;
+          case "pageup":
+          case "pagedown":
+            if (detailsOpen()) detailsScroll?.scrollBy((key.name === "pageup" ? -1 : 1) * 5);
+            return;
+          case "h": {
+            if (!l) return;
+            const ids = historyPrIds(l);
+            if (ids.length !== 1) {
+              notify(ids.length ? "Select one of the session's PRs for its full history" : "No PR yet, so no history", true);
+              return;
+            }
+            setLineKey(`p:${ids[0]}`);
+            await openHistory();
+            return;
+          }
         }
         if (l?.kind === "session") {
           const s = l.entry;
@@ -721,7 +786,6 @@ export function App(props: AppProps) {
               await refresh();
               return;
             }
-            case "return":
             case "o":
             case "c":
             case "d":
@@ -1112,6 +1176,7 @@ export function App(props: AppProps) {
       title={` Sessions · ${shownGroups().reduce((n, g) => n + g.sessions.length, 0)}${humanTotal() > 0 ? ` · ${humanTotal()} human comment(s) need you` : ""} `}
       marginTop={1}
       flexGrow={1}
+      flexBasis={detailsOpen() ? 0 : undefined}
       paddingLeft={1}
       paddingRight={1}
     >
@@ -1165,6 +1230,108 @@ export function App(props: AppProps) {
       </Show>
     </box>
   );
+
+  /** The lower half of the sessions view: everything about the selected line's session. */
+  const sessionDetailsView = () => {
+    const l = () => currentLine()!;
+    const e = () => l().entry;
+    const w = () => Math.max(40, dims().width - 6);
+    const nameW = () => Math.min(60, Math.floor(w() * 0.4));
+    const marker = (selected: boolean) => (selected ? "▸ " : "  ");
+    const cost = () => sessionEvalCost(e());
+    const historyTitle = () => {
+      const ids = historyPrIds(l());
+      if (ids.length === 0) return "History";
+      if (ids.length === 1) return `History · ${prLine(prById(ids[0]!) ?? { id: ids[0]! }).split(" - ")[0]}`;
+      return `History · ${ids.length} PRs`;
+    };
+    return (
+      <box
+        flexDirection="column"
+        border
+        borderColor={theme().accent}
+        title={` Session ${e().sessionId.slice(0, 8)} · ${sessionState(e().session)} `}
+        flexGrow={1}
+        flexBasis={0}
+        paddingLeft={1}
+        paddingRight={1}
+      >
+        <text flexShrink={0}>
+          {e().sessionId} · {e().agent}
+          {e().session?.model ? ` · model ${e().session!.model}` : ""}
+          {e().session?.effort ? ` · effort ${e().session!.effort}` : ""} · pane {e().session?.pane_id ?? "none"}
+        </text>
+        <text fg={theme().textMuted} flexShrink={0}>
+          {tilde(e().session?.cwd ?? e().prs[0]?.cwd ?? e().tickets[0]?.cwd ?? "?")}
+        </text>
+        <box flexDirection="row" flexShrink={0}>
+          <text fg={theme().textMuted}>Evaluator spend </text>
+          <text fg={theme().accent}>
+            <b>{formatUsd(cost().usd)}</b>
+          </text>
+          <text fg={theme().textMuted}>
+            {" "}
+            over {cost().runs} run{cost().runs === 1 ? "" : "s"}
+          </text>
+        </box>
+        <text fg={theme().info} flexShrink={0} marginTop={1}>
+          <b>PRs · {e().prs.length}</b>
+        </text>
+        <Show when={e().prs.length === 0}>
+          <text fg={theme().textMuted} flexShrink={0}>  none yet</text>
+        </Show>
+        <For each={e().prs}>
+          {(pr) => (
+            <box flexDirection="row" flexShrink={0}>
+              <text fg={l().kind === "pr" && l().key === `p:${pr.id}` ? theme().accent : undefined}>
+                {pad(marker(l().key === `p:${pr.id}`) + (l().group.title === MULTI_REPO_GROUP ? `${prGroup(pr.id)} ` : "") + prLine(pr), nameW())}{" "}
+              </text>
+              <text fg={statusColor(theme(), pr.last_status)}>{pad(pr.last_status, widths().status)} </text>
+              <text fg={(pr.humanOpen ?? 0) > 0 ? theme().warning : theme().textMuted}>{pad((pr.humanOpen ?? 0) > 0 ? `${pr.humanOpen} human` : "", 9)} </text>
+              <text fg={theme().textMuted}>{pad(`eval ${formatUsd(pr.eval_cost_usd ?? 0)} · ${pr.eval_count ?? 0}×`, 18)} </text>
+              <text fg={theme().textSecondary}>{pad((pr.last_reason ?? "").replace(/\s+/g, " "), Math.max(10, w() - nameW() - widths().status - 31))}</text>
+            </box>
+          )}
+        </For>
+        <text fg={theme().info} flexShrink={0} marginTop={1}>
+          <b>Tickets · {e().tickets.length}</b>
+        </text>
+        <Show when={e().tickets.length === 0}>
+          <text fg={theme().textMuted} flexShrink={0}>  none</text>
+        </Show>
+        <For each={e().tickets}>
+          {(t) => (
+            <box flexDirection="row" flexShrink={0}>
+              <text fg={l().key === `t:${t.key}` ? theme().accent : undefined}>{pad(`${marker(l().key === `t:${t.key}`)}${t.key} - ${t.summary ?? ""}`, nameW())} </text>
+              <text fg={statusColor(theme(), t.last_status)}>{pad(t.last_status, widths().status)} </text>
+              <text fg={theme().textMuted}>{pad(t.pr_id ? `PR ${prLine({ id: t.pr_id }).split(" ")[0]}` : "", 9)} </text>
+              <text fg={theme().textSecondary}>{pad((t.last_reason ?? "").replace(/\s+/g, " "), Math.max(10, w() - nameW() - widths().status - 12))}</text>
+            </box>
+          )}
+        </For>
+        <box flexDirection="row" flexShrink={0} marginTop={1}>
+          <text fg={theme().info}>
+            <b>{historyTitle()}</b>
+          </text>
+          <text fg={theme().textMuted}> · J/K scroll · h full page</text>
+        </box>
+        <scrollbox ref={(el: ScrollBoxRenderable) => (detailsScroll = el)} flexGrow={1} flexShrink={1} minHeight={3}>
+          <For each={detailsHistory()} fallback={<text fg={theme().textMuted}>{historyPrIds(l()).length ? "No events yet." : "No PR yet, so no history."}</text>}>
+            {(h) => (
+              <box flexDirection="row" flexShrink={0}>
+                <text fg={theme().info}>{pad(new Date(h.ev.ts).toLocaleString(), 22)} </text>
+                <Show when={historyPrIds(l()).length > 1}>
+                  <text fg={theme().textMuted}>{pad(prLine({ id: h.prId }).split(" ")[0]!, 6)} </text>
+                </Show>
+                <text>{pad(h.ev.kind, 16)} </text>
+                <text fg={theme().textSecondary}>{eventSummary(h.ev).replace(/\s+/g, " ")}</text>
+              </box>
+            )}
+          </For>
+        </scrollbox>
+      </box>
+    );
+  };
 
   /** The watch dialogs float over the PR list. */
   const modalWidth = () => Math.max(40, Math.min(100, dims().width - 12));
@@ -1432,9 +1599,12 @@ export function App(props: AppProps) {
           const filterHints = listQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")];
           if (listFiltering())
             return { title: "Sessions · filter", hints: [hint("type", "to filter by session, repo, PR, ticket or status"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
+          const detailHints = detailsOpen()
+            ? [hint("enter/esc", "close details"), hint("J/K", "scroll history"), hint("h", "full history")]
+            : [hint("enter", "session details")];
           const lineHints =
             l?.kind === "pr"
-              ? [hint("enter", "details & human comments"), hint("o", "open PR"), hint("c", "check now"), hint("d", "unwatch")]
+              ? [hint("o", "open PR"), hint("c", "check now"), hint("d", "unwatch")]
               : l?.kind === "ticket"
                 ? [hint("o", "open ticket"), hint("d", "dismiss")]
                 : [];
@@ -1442,6 +1612,7 @@ export function App(props: AppProps) {
             title: "Sessions",
             hints: [
               hint("↑↓", "move"),
+              ...detailHints,
               ...lineHints,
               hint("A", "go to agent"),
               hint("p", "pause/resume"),
@@ -1645,7 +1816,8 @@ export function App(props: AppProps) {
             </box>
           </Show>
           </Show>
-          <Show when={selectedSession()}>
+          <Show when={detailsOpen()}>{sessionDetailsView()}</Show>
+          <Show when={selectedSession() && !detailsOpen()}>
             <box border title=" Details " paddingLeft={1} flexDirection="column" flexShrink={0}>
               <text>
                 session {selectedSession()!.sessionId} · {selectedSession()!.agent}
@@ -1658,7 +1830,7 @@ export function App(props: AppProps) {
               </text>
             </box>
           </Show>
-          <Show when={currentTicket()}>
+          <Show when={currentTicket() && !detailsOpen()}>
             <box border title=" Details " paddingLeft={1} flexDirection="column" flexShrink={0}>
               <text>
                 {currentTicket()!.url} · session {currentTicket()!.session_id}
@@ -1670,7 +1842,7 @@ export function App(props: AppProps) {
               </text>
             </box>
           </Show>
-          <Show when={!ticketFocus() && current()}>
+          <Show when={!ticketFocus() && current() && !detailsOpen()}>
             <box border title=" Details " paddingLeft={1} flexDirection="column" flexShrink={0}>
               <text>
                 {current()!.url} · session {current()!.session_id}

@@ -108,6 +108,12 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN awaiting_ack_since INTEGER;
   ALTER TABLE sessions ADD COLUMN awaiting_ack TEXT;
   `,
+  `
+  ALTER TABLE prs ADD COLUMN eval_cost_usd REAL NOT NULL DEFAULT 0;
+  ALTER TABLE prs ADD COLUMN eval_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE sessions ADD COLUMN eval_cost_usd REAL NOT NULL DEFAULT 0;
+  ALTER TABLE sessions ADD COLUMN eval_count INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export const EVENTS_PER_PR = 50;
@@ -299,6 +305,18 @@ export class Store {
     if (keys.length === 0) return;
     const sets = keys.map((k) => `${k} = $${k}`).join(", ");
     this.db.query(`UPDATE sessions SET ${sets} WHERE session_id = $session_id`).run({ ...patch, session_id: sessionId } as never);
+  }
+
+  /**
+   * Adds one evaluator run's cost to the PR and to the session that owned the PR at the time.
+   * The session keeps its total even after the PR is merged or unwatched.
+   */
+  recordEvalCost(prId: string, sessionId: string, costUsd: number) {
+    const c = Number.isFinite(costUsd) && costUsd > 0 ? costUsd : 0;
+    this.db.query("UPDATE prs SET eval_cost_usd = eval_cost_usd + $c, eval_count = eval_count + 1 WHERE id = $id").run({ c, id: prId });
+    this.db
+      .query("UPDATE sessions SET eval_cost_usd = eval_cost_usd + $c, eval_count = eval_count + 1 WHERE session_id = $s")
+      .run({ c, s: sessionId });
   }
 
   private pruneSessions() {

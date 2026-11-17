@@ -8,6 +8,16 @@ export interface Verdict {
   costUsd?: number;
 }
 
+/** An evaluator run that failed; `costUsd` is what it still cost, when the CLI reported it. */
+export class EvaluatorError extends Error {
+  constructor(
+    message: string,
+    readonly costUsd?: number,
+  ) {
+    super(message);
+  }
+}
+
 export interface Evaluator {
   evaluate(input: EvalInput): Promise<Verdict>;
 }
@@ -92,10 +102,10 @@ export class ClaudeEvaluator implements Evaluator {
       throw new Error(`Evaluator returned non-JSON (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
     }
     if (out.is_error || !out.structured_output) {
-      throw new Error(`Evaluator failed (${out.subtype ?? "error"}): ${String(out.result ?? r.stderr).slice(0, 300)}`);
+      throw new EvaluatorError(`Evaluator failed (${out.subtype ?? "error"}): ${String(out.result ?? r.stderr).slice(0, 300)}`, out.total_cost_usd);
     }
     const v = out.structured_output;
-    if (typeof v.shouldFix !== "boolean") throw new Error("Evaluator output missing shouldFix");
+    if (typeof v.shouldFix !== "boolean") throw new EvaluatorError("Evaluator output missing shouldFix", out.total_cost_usd);
     return {
       shouldFix: v.shouldFix,
       reason: String(v.reason ?? ""),
