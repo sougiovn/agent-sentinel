@@ -744,3 +744,89 @@ test("TUI shortcuts dialog is titled for the repos view", async () => {
   expect(f).toContain("rescan");
   t.renderer.destroy();
 });
+
+test("TUI shows open human comments, their drafts, copies the reply and marks one resolved", async () => {
+  const d = makeDaemon();
+  const ref = parsePrRef("acme/web#1");
+  d.gh.add(ref);
+  d.gh.comment(ref, { id: 100, user: { login: "alice", type: "User" }, body: "Why not reuse the helper?", html_url: "https://github.com/acme/web/pull/1#issuecomment-100" });
+  d.gh.comment(ref, { id: 101, user: { login: "bob", type: "User" }, body: "Typo in the name" });
+  await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+  await d.daemon.handle("draft", { pr: "acme/web#1", item: "issue:100", summary: "Reuse the helper", change: "Switched to it in abc123", reply: "Good call, done in abc123." });
+
+  const copied: string[] = [];
+  const opened: string[] = [];
+  const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
+  const t = await testRender(
+    () => <App paths={d.paths} autoStart={false} client={client} copy={(s) => copied.push(s)} openUrl={(u) => opened.push(u)} />,
+    { width: 140, height: 40 },
+  );
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  let f = await frame();
+  expect(f).toContain("2 human comment(s) need you");
+  expect(f).toContain("2 open");
+
+  t.mockInput.pressEnter();
+  f = await frame();
+  expect(f).toContain("Human comments · 2 open");
+  expect(f).toContain("draft ready");
+  expect(f).toContain("needs you");
+  expect(f).toContain("About:  Reuse the helper");
+  expect(f).toContain("Good call, done in abc123.");
+
+  t.mockInput.pressKey("y");
+  t.mockInput.pressKey("o");
+  await frame();
+  expect(copied).toEqual(["Good call, done in abc123."]);
+  expect(opened).toEqual(["https://github.com/acme/web/pull/1#issuecomment-100"]);
+
+  t.mockInput.pressKey("x");
+  f = await frame();
+  expect(f).toContain("Human comments · 1 open");
+  expect(f).toContain("✓ resolved");
+  expect(d.store.getHumanComment("github.com/acme/web#1", "issue:100")!.resolved_at).not.toBeNull();
+
+  t.mockInput.pressEscape();
+  f = await frame();
+  expect(f).toContain("1 human comment(s) need you");
+  t.renderer.destroy();
+});
+
+test("TUI won't reopen a thread resolved on GitHub, and says when there's no reply to copy", async () => {
+  const d = makeDaemon();
+  const ref = parsePrRef("acme/web#1");
+  d.gh.add(ref);
+  d.gh.comment(ref, { id: 200, user: { login: "bob", type: "User" }, body: "rename", path: "a.ts", line: 3 }, "inline");
+  d.gh.thread(ref, [200], true);
+  await d.daemon.handle("watch", { prs: ["acme/web#1"], agent: "claude", sessionId: "s1", cwd: "/r" });
+
+  const copied: string[] = [];
+  const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={d.paths} autoStart={false} client={client} copy={(s) => copied.push(s)} />, { width: 140, height: 40 });
+  const frame = async () => {
+    await Bun.sleep(100);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  expect(await frame()).not.toContain("need you");
+  t.mockInput.pressEnter();
+  let f = await frame();
+  expect(f).toContain("Human comments · 0 open");
+  expect(f).toContain("✓ resolved");
+  expect(f).toContain("a.ts:3");
+
+  t.mockInput.pressKey("x");
+  f = await frame();
+  expect(f).toContain("resolved on GitHub; unresolve it there");
+  expect(d.store.getHumanComment("github.com/acme/web#1", "inline:200")!.resolved_at).toBeNull();
+
+  t.mockInput.pressKey("y");
+  f = await frame();
+  expect(f).toContain("No reply drafted yet");
+  expect(copied).toEqual([]);
+  t.renderer.destroy();
+});

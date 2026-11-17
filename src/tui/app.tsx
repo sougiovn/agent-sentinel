@@ -5,12 +5,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, saveConfig, type Config } from "../core/config.ts";
 import type { Paths } from "../core/paths.ts";
-import type { EventRow } from "../core/types.ts";
+import type { EventRow, HumanCommentRow } from "../core/types.ts";
+import { copyToClipboard } from "./clipboard.ts";
 import type { MyPr, NewWatchDefaults, PrListEntry, RepoEntry, RepoView, RpcMethod, RpcMethods, StatusInfo, TicketListEntry, WorktreeEntry } from "../daemon/protocol.ts";
 import { Client } from "../cli/client.ts";
 import { startDaemon as startDaemonProcess } from "../cli/daemon-control.ts";
 import { openUrl as defaultOpenUrl } from "../cli/open-url.ts";
-import { ago, prGroup, prLine, sortByGroup } from "../cli/format.ts";
+import { ago, draftState, humanCommentLocation, prGroup, prLine, sortByGroup, type DraftState } from "../cli/format.ts";
 import { cycleField, displayField, FORM_FIELDS, initialForm, watchRequest, type NewWatchForm } from "./new-watch.ts";
 import { filterPrs, filterWatched } from "./pr-filter.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
@@ -28,6 +29,29 @@ export interface RpcClient {
 
 /** Most Jira ticket rows shown before the list scrolls. */
 const TICKET_ROWS = 6;
+
+/** Most human comment rows shown in the PR details before the list scrolls. */
+const HUMAN_ROWS = 6;
+
+const STATE_LABEL: Record<DraftState, string> = {
+  "not sent": "needs you",
+  waiting: "agent working",
+  "no draft": "⚠ no draft",
+  drafted: "draft ready",
+  resolved: "✓ resolved",
+};
+
+const STATE_HINT: Record<DraftState, string> = {
+  "not sent": "Not sent to the agent (the evaluator found nothing to change). Reply yourself, then x to mark it resolved.",
+  waiting: "The agent is working on it and will record a draft.",
+  "no draft": "The agent stopped without recording a draft. Check its pane, or e to write the reply yourself.",
+  drafted: "",
+  resolved: "Resolved. x reopens it.",
+};
+
+function clip(s: string, n: number) {
+  return s.length > n ? `${s.slice(0, n)}…` : s;
+}
 
 /**
  * Waits a tick. Call it before focusing an input from a key handler, or the key that
@@ -49,6 +73,8 @@ export interface AppProps {
   client?: RpcClient;
   /** Override how URLs are opened in the browser (tests). */
   openUrl?: (url: string) => void;
+  /** Override how text is copied to the clipboard (tests). */
+  copy?: (text: string) => void;
 }
 
 export function App(props: AppProps) {
@@ -74,6 +100,11 @@ export function App(props: AppProps) {
   const currentTicket = () => (ticketFocus() ? tickets()[ticketSel()] : undefined);
   const showTickets = () => !!status()?.jira?.enabled || tickets().length > 0;
   const [history, setHistory] = createSignal<EventRow[]>([]);
+  /** Human comments of the PR whose details are open; open ones first. */
+  const [humans, setHumans] = createSignal<HumanCommentRow[]>([]);
+  const [humanSel, setHumanSel] = createSignal(0);
+  const selectedHuman = () => humans()[humanSel()];
+  const humanTotal = () => prs().reduce((n, p) => n + (p.humanOpen ?? 0), 0);
   const [flash, setFlash] = createSignal<{ text: string; error: boolean } | null>(null);
   const [refreshing, setRefreshing] = createSignal(false);
   const [confirmDelete, setConfirmDelete] = createSignal(false);
@@ -187,6 +218,7 @@ export function App(props: AppProps) {
       if (keptTicket >= 0) setTicketSel(keptTicket);
       else if (ticketSel() >= ts.length) setTicketSel(Math.max(0, ts.length - 1));
       if (ts.length === 0) setTicketFocus(false);
+      if (view() === "history" && selectedId) await loadDetails(selectedId).catch(() => {});
       const shown = shownPrs();
       const kept = selectedId ? shown.findIndex((p) => p.id === selectedId) : -1;
       if (kept >= 0) setSel(kept);
@@ -297,12 +329,58 @@ export function App(props: AppProps) {
   };
   if (props.autoStart !== false) void startDaemon();
 
+  /** Loads the open PR's events and human comments, keeping the same comment selected. */
+  const loadDetails = async (prId: string) => {
+    const keep = selectedHuman()?.item_id;
+    const [events, comments] = await Promise.all([
+      client.call("history", { pr: prId }),
+      // An older daemon has no human comment tracking.
+      client.call("humanComments", { pr: prId }).catch(() => [] as HumanCommentRow[]),
+    ]);
+    const rank = (c: HumanCommentRow) => (draftState(c, false) === "resolved" ? 1 : 0);
+    const sorted = [...comments].sort((a, b) => rank(a) - rank(b));
+    setHistory(events);
+    setHumans(sorted);
+    const i = keep ? sorted.findIndex((c) => c.item_id === keep) : -1;
+    setHumanSel(i >= 0 ? i : Math.min(humanSel(), Math.max(0, sorted.length - 1)));
+  };
+
   const openHistory = async () => {
     const pr = current();
     if (!pr) return;
     try {
-      setHistory(await client.call("history", { pr: pr.id }));
+      setHumanSel(0);
+      setHumans([]);
+      await loadDetails(pr.id);
       setView("history");
+    } catch (e) {
+      notify((e as Error).message, true);
+    }
+  };
+
+  const humanState = (c: HumanCommentRow): DraftState => {
+    const pr = current();
+    return draftState(c, pr?.session?.state === "busy" || pr?.last_status === "fix_running");
+  };
+
+  /** Opens the selected comment's reply in $EDITOR and saves it as the user's draft. */
+  const editReply = async () => {
+    const pr = current();
+    const c = selectedHuman();
+    if (!pr || !c) return;
+    const before = c.draft_reply ?? "";
+    const file = join(props.paths.home, `reply-${c.item_id.replace(/[^\w-]/g, "_")}.md`);
+    writeFileSync(file, before);
+    const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+    await renderer.suspend();
+    spawnSync("sh", ["-c", `${editor} "$1"`, "sh", file], { stdio: "inherit" });
+    await renderer.resume();
+    const text = readFileSync(file, "utf8").trimEnd();
+    if (text === before.trimEnd()) return;
+    try {
+      await client.call("draft", { pr: pr.id, item: c.item_id, reply: text, by: "user" });
+      await loadDetails(pr.id);
+      notify("Reply saved");
     } catch (e) {
       notify((e as Error).message, true);
     }
@@ -763,7 +841,46 @@ export function App(props: AppProps) {
       return;
     }
     if (v === "history") {
+      const pr = current();
+      const c = selectedHuman();
       if (key.name === "escape" || key.name === "q" || key.name === "backspace") setView("list");
+      else if (key.name === "up" || key.name === "k") setHumanSel((i) => Math.max(0, i - 1));
+      else if (key.name === "down" || key.name === "j") setHumanSel((i) => Math.min(Math.max(0, humans().length - 1), i + 1));
+      else if (key.name === "o" && pr) {
+        const url = c?.url ?? pr.url;
+        try {
+          (props.openUrl ?? defaultOpenUrl)(url);
+          notify(`Opened ${url}`);
+        } catch (e) {
+          notify(`Could not open ${url}: ${(e as Error).message}`, true);
+        }
+      } else if (key.name === "y" && c) {
+        if (!c.draft_reply) {
+          notify("No reply drafted yet; e writes one", true);
+          return;
+        }
+        try {
+          (props.copy ?? copyToClipboard)(c.draft_reply);
+          notify(`Copied the reply to @${c.author ?? "reviewer"}`);
+        } catch (e) {
+          notify(`Could not copy: ${(e as Error).message}`, true);
+        }
+      } else if (key.name === "e" && c) await editReply();
+      else if (key.name === "x" && c && pr) {
+        const resolved = humanState(c) !== "resolved";
+        if (!resolved && c.gh_resolved) {
+          notify("This thread is resolved on GitHub; unresolve it there", true);
+          return;
+        }
+        try {
+          await client.call("resolveComment", { pr: pr.id, item: c.item_id, resolved });
+          await loadDetails(pr.id);
+          await refresh();
+          notify(resolved ? `Marked ${c.item_id} resolved` : `Reopened ${c.item_id}`);
+        } catch (e) {
+          notify((e as Error).message, true);
+        }
+      }
       return;
     }
     if (v === "settings") {
@@ -841,8 +958,8 @@ export function App(props: AppProps) {
 
   const widths = () => {
     const w = dims().width - 4;
-    const fixed = { agent: 7, session: 10, checked: 10, status: 13 };
-    const rest = Math.max(20, w - fixed.agent - fixed.session - fixed.checked - fixed.status - 5);
+    const fixed = { agent: 7, session: 10, checked: 10, human: 6, status: 13 };
+    const rest = Math.max(20, w - fixed.agent - fixed.session - fixed.checked - fixed.human - fixed.status - 6);
     const pr = Math.min(Math.max(30, Math.floor(rest * 0.6)), 80);
     return { ...fixed, pr, reason: Math.max(10, rest - pr) };
   };
@@ -944,6 +1061,22 @@ export function App(props: AppProps) {
   };
 
   /** The Jira tickets that fit in their box, scrolled so the selection stays visible. */
+  /** The slice of human comments shown in the details view, scrolled so the selection stays visible. */
+  const humanWindow = () => {
+    const all = humans();
+    const start = Math.max(0, Math.min(humanSel() - HUMAN_ROWS + 1, all.length - HUMAN_ROWS));
+    return all.slice(start, start + HUMAN_ROWS);
+  };
+
+  const stateColor = (s: DraftState) =>
+    ({
+      resolved: theme().textMuted,
+      drafted: theme().success,
+      waiting: theme().pending,
+      "no draft": theme().error,
+      "not sent": theme().warning,
+    })[s];
+
   const ticketWindow = () => {
     const all = tickets();
     const start = Math.max(0, Math.min(ticketSel() - TICKET_ROWS + 1, all.length - TICKET_ROWS));
@@ -977,7 +1110,19 @@ export function App(props: AppProps) {
       };
     switch (view()) {
       case "history":
-        return { title: "History", hints: [hint("esc", "back")] };
+        return {
+          title: "PR details",
+          hints: humans().length
+            ? [
+                hint("↑↓", "select comment"),
+                hint("y", "copy reply"),
+                hint("e", "edit reply"),
+                hint("x", "resolve/reopen"),
+                hint("o", "open comment"),
+                hint("esc", "back"),
+              ]
+            : [hint("o", "open PR"), hint("esc", "back")],
+        };
       case "repos": {
         if (repoFiltering())
           return {
@@ -1044,7 +1189,7 @@ export function App(props: AppProps) {
           hints: [
             hint("↑↓", "move"),
             ...(listQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")]),
-            hint("enter", "history"),
+            hint("enter", "details & human comments"),
             hint("o", "open"),
             hint("A", "go to agent"),
             hint("n", "watch a PR"),
@@ -1120,10 +1265,10 @@ export function App(props: AppProps) {
 
       <Switch>
         <Match when={view() === "list" || view() === "pick-pr" || view() === "new-watch" || view() === "settings"}>
-          <box flexDirection="column" border title=" Watched PRs " marginTop={1} flexGrow={1} paddingLeft={1} paddingRight={1}>
+          <box flexDirection="column" border title={humanTotal() > 0 ? ` Watched PRs · ${humanTotal()} human comment(s) need you ` : " Watched PRs "} marginTop={1} flexGrow={1} paddingLeft={1} paddingRight={1}>
             <text fg={theme().textMuted} flexShrink={0}>
               {pad("PR", widths().pr)} {pad("AGENT", widths().agent)} {pad("SESSION", widths().session)}{" "}
-              {pad("CHECKED", widths().checked)} {pad("STATUS", widths().status)} REASON
+              {pad("CHECKED", widths().checked)} {pad("HUMAN", widths().human)} {pad("STATUS", widths().status)} REASON
             </text>
             <Show when={listFiltering() || listQuery() !== ""}>
               <box flexDirection="row" height={1} flexShrink={0}>
@@ -1160,6 +1305,9 @@ export function App(props: AppProps) {
                       {pad(pr.session_id.slice(0, 8) + (pr.session?.paused ? " ⏸" : ""), widths().session)}{" "}
                       {pad(ago(pr.last_checked_at), widths().checked)}{" "}
                     </text>
+                    <text fg={(pr.humanOpen ?? 0) > 0 ? theme().warning : theme().textMuted}>
+                      {pad((pr.humanOpen ?? 0) > 0 ? `${pr.humanOpen} open` : "-", widths().human)}{" "}
+                    </text>
                     <text fg={statusColor(theme(), pr.last_status)}>{pad(pr.last_status, widths().status)} </text>
                     <text fg={theme().textSecondary}>{pad((pr.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
                     </box>
@@ -1192,6 +1340,7 @@ export function App(props: AppProps) {
                         {pad(`${t.key} - ${t.summary ?? ""}`, widths().pr)} {pad("claude", widths().agent)}{" "}
                         {pad(t.session_id.slice(0, 8) + (t.session?.paused ? " ⏸" : ""), widths().session)}{" "}
                         {pad(ago(t.picked_at), widths().checked)}{" "}
+                        {pad("", widths().human)}{" "}
                       </text>
                       <text fg={statusColor(theme(), t.last_status)}>{pad(t.last_status, widths().status)} </text>
                       <text fg={theme().textSecondary}>{pad((t.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
@@ -1283,7 +1432,54 @@ export function App(props: AppProps) {
         </Match>
 
         <Match when={view() === "history"}>
-          <scrollbox border title={` History · ${current()?.id ?? ""} `} marginTop={1} flexGrow={1} paddingLeft={1}>
+          <Show when={humans().length > 0}>
+            <box
+              flexDirection="column"
+              border
+              borderColor={theme().accent}
+              title={` Human comments · ${humans().filter((c) => humanState(c) !== "resolved").length} open · ${current()?.id ?? ""} `}
+              marginTop={1}
+              flexShrink={0}
+              paddingLeft={1}
+              paddingRight={1}
+            >
+              <For each={humanWindow()}>
+                {(c) => (
+                  <box flexDirection="row" flexShrink={0} backgroundColor={c === selectedHuman() ? theme().selectionBackground : undefined}>
+                    <text fg={stateColor(humanState(c))}>{pad(STATE_LABEL[humanState(c)], 14)} </text>
+                    <text fg={theme().info}>{pad(`@${c.author ?? "unknown"}`, 18)} </text>
+                    <text fg={theme().textMuted}>{pad(humanCommentLocation(c), 28)} </text>
+                    <text fg={theme().textSecondary}>{pad(c.body.replace(/\s+/g, " "), Math.max(10, dims().width - 70))}</text>
+                  </box>
+                )}
+              </For>
+            </box>
+            <Show when={selectedHuman()}>
+              {(c: () => HumanCommentRow) => (
+                <box flexDirection="column" border title={` ${c().item_id} `} flexShrink={0} paddingLeft={1} paddingRight={1}>
+                  <text fg={theme().textSecondary}>{clip(c().body, 600)}</text>
+                  <Show
+                    when={c().draft_summary || c().draft_change || c().draft_reply}
+                    fallback={<text fg={theme().textMuted}>{STATE_HINT[humanState(c())]}</text>}
+                  >
+                    <Show when={c().draft_summary}>
+                      <text marginTop={1}>{`About:  ${c().draft_summary}`}</text>
+                    </Show>
+                    <Show when={c().draft_change}>
+                      <text>{`Change: ${c().draft_change}`}</text>
+                    </Show>
+                    <Show when={c().draft_reply}>
+                      <text marginTop={1} fg={theme().textMuted}>
+                        Proposed reply{c().draft_by === "user" ? " (edited by you)" : ""} · y copy · e edit
+                      </text>
+                      <text fg={theme().success}>{clip(c().draft_reply!, 1200)}</text>
+                    </Show>
+                  </Show>
+                </box>
+              )}
+            </Show>
+          </Show>
+          <scrollbox border title={` History · ${current()?.id ?? ""} `} marginTop={humans().length > 0 ? 0 : 1} flexGrow={1} paddingLeft={1}>
             <For each={history()} fallback={<text fg={theme().textMuted}>No events yet.</text>}>
               {(ev) => (
                 <box flexDirection="column" marginBottom={1}>
