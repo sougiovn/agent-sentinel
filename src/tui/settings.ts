@@ -27,7 +27,7 @@ const bool = (key: string, label: string, get: (c: Config) => boolean, set: (c: 
   f(key, label, "enum", (c) => (get(c) ? "on" : "off"), (c, v: string) => set(c, v === "on"), ["on", "off"]);
 
 export const FIELDS: Field[] = [
-  f("multiplexer", "Multiplexer", "enum", (c) => c.multiplexer, (c, v) => (c.multiplexer = v), ["rex", "herdr"]),
+  f("multiplexer", "Multiplexer", "enum", (c) => c.multiplexer, (c, v) => (c.multiplexer = v), ["rex", "herdr", "hc"]),
   f("pollIntervalSec", "Poll interval (s)", "int", (c) => c.pollIntervalSec, (c, v) => (c.pollIntervalSec = v)),
   f("evaluator.model", "Evaluator model", "string", (c) => c.evaluator.model, (c, v) => (c.evaluator.model = v)),
   f("evaluator.maxBudgetUsd", "Evaluator budget USD (0 = none)", "number", (c) => c.evaluator.maxBudgetUsd, (c, v) => (c.evaluator.maxBudgetUsd = v)),

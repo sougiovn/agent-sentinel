@@ -20,7 +20,8 @@ import { fakeGit } from "./fakes.ts";
 import type { Exec } from "../src/core/exec.ts";
 import { Store } from "../src/core/db.ts";
 import { RexMux } from "../src/mux/rex.ts";
-import type { CreatePaneOptions } from "../src/mux/mux.ts";
+import { HcMux } from "../src/mux/hc.ts";
+import { MuxUnavailableError, type CreatePaneOptions } from "../src/mux/mux.ts";
 import { GhCli } from "../src/github/gh.ts";
 import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
 import { linkWorktrees, listRepos, namesTicket, parseWorktreeList } from "../src/core/worktrees.ts";
@@ -747,6 +748,97 @@ describe("rex mux", () => {
     const again = await mux.createPane(opts({ homeId: "session:gone" }));
     expect(rex.sessions).toHaveLength(1);
     expect(again.homeId).toBe(first.homeId);
+  });
+});
+
+describe("hc mux", () => {
+  /** Minimal hc stand-in: terminals by address, each live or finished. On macOS/Linux `hc` starts a stopped core itself, so `startFails` mimics a core that can't start. */
+  function fakeHc() {
+    const terminals = new Map<string, { state: string; labels: string[]; cwd: string; sent: string[] }>();
+    const calls: string[][] = [];
+    let n = 0;
+    let startFails = false;
+    const ok = (o: unknown) => ({ code: 0, stdout: JSON.stringify(o), stderr: "" });
+    const notFound = (t: string) => ({ code: 3, stdout: JSON.stringify({ error: { kind: "not_found", message: `no terminal "${t}"` } }), stderr: "" });
+    const exec: Exec = async (cmd) => {
+      calls.push(cmd);
+      const a = cmd.slice(1);
+      if (a[0] === "server") return startFails ? { code: 1, stdout: "", stderr: "core failed to start" } : ok({ live: terminals.size });
+      if (a[0] === "run") {
+        const address = `t${++n}`;
+        const labels = a.flatMap((v, i) => (a[i - 1] === "--label" ? [v] : []));
+        terminals.set(address, { state: "live", labels, cwd: a[a.indexOf("--cwd") + 1]!, sent: [] });
+        return ok({ address, state: "live" });
+      }
+      const t = terminals.get(a[1]!);
+      if (!t) return notFound(a[1]!);
+      if (a[0] === "get") return ok({ address: a[1], state: t.state, labels: t.labels });
+      if (a[0] === "send") {
+        t.sent.push(a[2]!);
+        return ok({ turn: 0 });
+      }
+      return ok({});
+    };
+    return { terminals, calls, exec, setStartFails: (v: boolean) => (startFails = v) };
+  }
+
+  const opts = (o: Partial<CreatePaneOptions> = {}): CreatePaneOptions => ({
+    homeName: "sentinel",
+    layout: "sentinel-tab",
+    maxPanesPerTab: 4,
+    cwd: "/repo",
+    label: "claude:abcd1234",
+    ...o,
+  });
+
+  test("opens a detached, labeled terminal per session in its cwd", async () => {
+    const hc = fakeHc();
+    const mux = new HcMux(hc.exec);
+    const first = await mux.createPane(opts());
+    const second = await mux.createPane(opts({ cwd: "/other" }));
+    expect(first).toEqual({ paneId: "t1", tabId: "t1", homeId: "sentinel" });
+    expect(second.paneId).toBe("t2");
+    expect(hc.terminals.get("t1")).toMatchObject({ cwd: "/repo", labels: ["sentinel=sentinel", "pane=claude:abcd1234"] });
+    expect(hc.terminals.get("t2")!.cwd).toBe("/other");
+    const run = hc.calls.find((c) => c[1] === "run")!;
+    for (const flag of ["--bg", "--json", "--no-parent", "--no-notify"]) expect(run).toContain(flag);
+    expect(run[run.indexOf("--cwd") + 1]).toBe("/repo");
+    expect(run.flatMap((v, i) => (run[i - 1] === "--label" ? [v] : []))).toEqual(["sentinel=sentinel", "pane=claude:abcd1234"]);
+  });
+
+  test("sends a line to the terminal", async () => {
+    const hc = fakeHc();
+    const mux = new HcMux(hc.exec);
+    const { paneId } = await mux.createPane(opts());
+    await mux.sendLine(paneId, "claude --resume 'x' \"$(cat '/p')\"");
+    expect(hc.terminals.get(paneId)!.sent).toEqual(["claude --resume 'x' \"$(cat '/p')\""]);
+  });
+
+  test("a pane exists only while its terminal is live", async () => {
+    const hc = fakeHc();
+    const mux = new HcMux(hc.exec);
+    const { paneId } = await mux.createPane(opts());
+    expect(await mux.paneExists(paneId)).toBe(true);
+    hc.terminals.get(paneId)!.state = "finished";
+    expect(await mux.paneExists(paneId)).toBe(false);
+    expect(await mux.paneExists("t99")).toBe(false);
+  });
+
+  test("reports a core that fails to start, or a missing hc", async () => {
+    const hc = fakeHc();
+    const mux = new HcMux(hc.exec);
+    await mux.ensureAvailable();
+    hc.setStartFails(true);
+    await expect(mux.ensureAvailable()).rejects.toBeInstanceOf(MuxUnavailableError);
+    const missing = new HcMux(async () => {
+      throw new Error("Executable not found in $PATH: \"hc\"");
+    });
+    await expect(missing.ensureAvailable()).rejects.toBeInstanceOf(MuxUnavailableError);
+  });
+
+  test("config accepts hc", () => {
+    const r = parseConfig(JSON.stringify({ multiplexer: "hc" }));
+    expect(r.ok && r.config.multiplexer).toBe("hc");
   });
 });
 

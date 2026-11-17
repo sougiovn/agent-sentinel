@@ -172,15 +172,16 @@ Rex also gets asked to show Sentinel's session (`rex do session.select`). That i
 
 ### Panes
 
-Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). Each agent session gets one pane, named after the work it handles: the Jira ticket key (`CP-7713`), or the repo and number of each PR it watches (`web#42`, comma-separated if there are several). A session with neither falls back to `<agent>:<first 8 chars of session ID>`. The pane's ID is stored so it can be reused, and the name is set once, when the pane is created.
+Sentinel runs agents only in a multiplexer session (Rex) or workspace (Herdr) that it owns, named `spawn.sessionName` (default `sentinel`). herdr-core (`hc`) has neither: there, Sentinel owns the terminals that carry its label (see the last bullet). Each agent session gets one pane, named after the work it handles: the Jira ticket key (`CP-7713`), or the repo and number of each PR it watches (`web#42`, comma-separated if there are several). A session with neither falls back to `<agent>:<first 8 chars of session ID>`. The pane's ID is stored so it can be reused, and the name is set once, when the pane is created.
 
 - `spawn.layout: "sentinel-tab"` (default): new panes go into an existing Sentinel tab that has fewer than `spawn.maxPanesPerTab` panes (default 4), alternating right and below splits. When every tab is full, Sentinel opens a new one.
 - `spawn.layout: "tab-per-session"`: every new pane gets its own tab, named like the pane. Shared tabs (`sentinel-tab`) keep numbered names: `sentinel-1`, `sentinel-2`, and so on.
-- Sentinel remembers its home session/workspace by id, so it keeps finding it after an agent inside renames it (Rex prompts Claude to label its session). It falls back to `spawn.sessionName` only when that id is gone.
+- With Rex and Herdr, Sentinel remembers its home session/workspace by id, so it keeps finding it after an agent inside renames it (Rex prompts Claude to label its session). It falls back to `spawn.sessionName` only when that id is gone.
 - With Rex, every prompt Sentinel delivers ends with a note telling the agent not to rename the shared Rex session. It mustn't rename its tab either: with `sentinel-tab` other agents share it, and with `tab-per-session` Sentinel has already named it after the ticket or PR.
 - Panes start as an interactive shell in the agent's directory, and Sentinel types commands into them. New panes and tabs don't take focus.
-- If the stored pane no longer exists (closed by the user, or the Sentinel session was killed), Sentinel creates a new one, and recreates the session or workspace if needed.
+- If the stored pane no longer exists (closed by the user, or the Sentinel session was killed), Sentinel creates a new one, and with Rex and Herdr recreates the session or workspace if needed.
 - Changing `multiplexer` makes the next delivery open a new pane in the new multiplexer.
+- **herdr-core (`hc`)** has no sessions, tabs or splits. Each agent session gets its own terminal, started detached from any parent terminal, in the agent's directory, with the labels `sentinel=<spawn.sessionName>` and `pane=<pane label>` (the pane name described above). `spawn.layout` and `spawn.maxPanesPerTab` don't apply. List them with `hc ls --label sentinel=<spawn.sessionName>`. A terminal that has finished counts as gone, so the next delivery opens a new one. Sentinel types with `hc send` without `--force`, which differs from Rex and Herdr in two ways: `hc` refuses to type while the program is blocked on a dialog, so that delivery fails (see "When delivery fails") and Sentinel never answers the dialog; and `hc` holds the text while a person has an unfinished draft in the terminal, so delivery can be delayed.
 
 ### What gets typed
 
@@ -202,12 +203,12 @@ After a successful delivery, the session is marked busy and its PRs' status beco
 
 ### When delivery fails
 
-If the multiplexer can't be reached (Rex down, Herdr server not running) or a pane command fails:
+If the multiplexer can't be reached (Rex down, Herdr server not running, `hc` missing or its core failing to start) or a pane command fails:
 
 - each affected PR's status becomes `spawn_failed` with the error;
 - the queued items are dropped and un-marked as seen.
 
-The next poll then sees them as new again and evaluates them together with anything newer, so nothing is lost and the agent gets one combined prompt. Sentinel never starts the Herdr server itself.
+The next poll then sees them as new again and evaluates them together with anything newer, so nothing is lost and the agent gets one combined prompt. Sentinel never starts the Herdr server. herdr-core is different: on macOS and Linux the `hc` commands Sentinel runs start the core when it isn't running, so a stopped core is started on first use and is not a failure. On Windows `hc server status` doesn't start it, so start it yourself with `hc server start`.
 
 ## Agent state hooks
 
@@ -363,7 +364,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 
 | Field | Default | Notes |
 | --- | --- | --- |
-| `multiplexer` | `"rex"` | `"rex"` or `"herdr"` |
+| `multiplexer` | `"rex"` | `"rex"`, `"herdr"` or `"hc"` (herdr-core) |
 | `pollIntervalSec` | `300` | Minimum 30 |
 | `evaluator.model` | `"sonnet"` | Any `claude --model` value |
 | `evaluator.maxBudgetUsd` | `0` | 0 = no cap |
@@ -376,7 +377,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `spawn.maxPanesPerTab` | `4` | |
 | `spawn.maxConcurrent` | `0` | 0 = unlimited |
 | `spawn.busyTimeoutMin` | `60` | |
-| `spawn.sessionName` | `"sentinel"` | Name of Sentinel's Rex session or Herdr workspace |
+| `spawn.sessionName` | `"sentinel"` | Name of Sentinel's Rex session or Herdr workspace; with `hc`, the value of the `sentinel` label |
 | `fixPromptTemplate` | built-in | Placeholders `{{prUrl}}`, `{{reason}}`, `{{items}}` |
 | `introPromptTemplate` | built-in | First prompt for a TUI-started session with nothing to fix. Placeholders `{{prUrl}}`, `{{title}}`, `{{repo}}`, `{{number}}`, `{{cwd}}` |
 | `newWatch.onlyMine` | `true` | PR picker lists only PRs you authored; `false` = any open PR involving you |
@@ -474,7 +475,7 @@ TUI tests also cover the repos view: worktrees with their PR and ticket, opening
 
 The footer and `?` dialog are tested for: `? help` kept visible while the other hints are truncated with `…` in a narrow terminal; the dialog listing every shortcut, titled for the main view, settings, the repos view and a value being edited; its `/` filter, with keys like `q` typed as text and a PR filter underneath keeping its focus; other keys ignored while it's open; opening from a focused filter input or a value being edited without typing `?` into it; a pending unwatch cancelled by `?`; and `? help` staying next to a "Saved" message. The hint fitting and filtering functions have unit tests.
 
-Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
+Checked against the real tools: the evaluator call and its output format, the Rex adapter (session and tab creation, pane labels, splits, tab overflow, typing into a pane), the herdr-core adapter against `hc` 0.1.20 (terminal creation, labels, working directory, typing a quoted line, detecting a finished terminal), and Claude's `Stop`, `UserPromptSubmit` and `SessionEnd` hooks firing from `--settings` with `session_id` in the payload.
 
 Jira tickets are covered with a fake Jira client and a fake `acli`: JQL building and quoting, the `acli` arguments, parsing its JSON (Atlassian Document Format descriptions with links, cards, mentions and lists), ticket URLs on the logged-in site, each mode's prompt, model and effort reaching the launch, one session per ticket, transition after start (skipped when already there or when `transitionTo` is blank), retry after a failed launch, a failed transition, a failed search, the move to review when the ticket's session hands off a PR (once, skipped for other sessions or a blank `reviewStatus`, retried after a failure), `maxConcurrent`, a paused session, summary updates, dismissing, the ticket session surviving session pruning and taking over the PR it hands off, `r` polling Jira, the CLI table and status line, and the Jira settings. A TUI test drives the tickets list and dismissing.
 
