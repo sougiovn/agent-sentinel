@@ -101,7 +101,7 @@ Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `trans
    - On error, nothing is marked seen and the next poll retries.
 4. **Queue**: flagged items queue per **agent session**, one fix at a time per session. Sessions run in parallel, limited by `spawn.maxConcurrent` (0 = unlimited).
 5. **Deliver** into a pane Sentinel owns. With the default `spawn.layout: "sentinel-tab"`, there is one session/workspace named `spawn.sessionName`, holding one pane per agent session, with up to `maxPanesPerTab` panes before another tab opens.
-   - New pane, or the agent has exited: Sentinel types `claude --resume <id> --settings <hooks> … -- "<prompt>"` (or `codex resume <id> …`) into the pane. A session started from the dashboard uses `--session-id <id>` on its first launch, plus its `--model`/`--effort`.
+   - New pane, or the agent has exited: Sentinel waits for the new pane's shell prompt, then types `claude --resume <id> --settings <hooks> … -- "<prompt>"` (or `codex resume <id> …`) into the pane. A session started from the dashboard uses `--session-id <id>` on its first launch, plus its `--model`/`--effort`.
    - Agent still running and idle: Sentinel types a one-line pointer to the prompt file.
 6. **Track state**: agent hooks call `sentinel hook idle|busy|exit`, which marks the session busy or idle. `spawn.busyTimeoutMin` frees a session if no idle signal arrives. If the agent was given human comments and tries to stop without recording a draft for each one (`sentinel draft`), the `Stop` hook sends it back once to record them.
 7. **Clean up**: closed or merged PRs are deleted from the database and no longer watched.

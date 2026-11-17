@@ -138,6 +138,10 @@ export class RexMux implements Multiplexer {
     return undefined;
   }
 
+  async readScreen(paneId: string) {
+    return this.rex(["capture", "-b", paneId]);
+  }
+
   async sendLine(paneId: string, text: string) {
     await this.rex(["send", "-b", paneId, text]);
     await this.rex(["send-key", "-b", paneId, "enter"]);

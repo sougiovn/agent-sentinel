@@ -811,3 +811,25 @@ describe("merge conflicts", () => {
     expect(t.store.humanComments(ID)).toEqual([]);
   });
 });
+
+describe("launch reliability", () => {
+  test("a new pane's shell prompt is waited for before typing", async () => {
+    const t = await setup();
+    t.gh.comment(ref, { id: 101 });
+    await t.daemon.sentinel.tick();
+    const [pane] = [...t.mux.panes.keys()];
+    expect(t.mux.reads.get(pane!)).toBe(7); // the screen never changes after its first text, so it must stay quiet for 6 more reads
+    expect(t.mux.allLines()).toHaveLength(1);
+  });
+
+  test("a shell that never shows a prompt still gets the line after the wait gives up", async () => {
+    const t = await setup();
+    t.mux.slowShell = true;
+    t.gh.comment(ref, { id: 101 });
+    await t.daemon.sentinel.tick();
+    const [pane] = [...t.mux.panes.keys()];
+    expect(t.mux.reads.get(pane!)).toBe(40);
+    expect(t.mux.allLines()).toHaveLength(1);
+  });
+
+});

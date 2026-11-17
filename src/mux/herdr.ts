@@ -107,6 +107,10 @@ export class HerdrMux implements Multiplexer {
     return undefined;
   }
 
+  async readScreen(paneId: string) {
+    return execOk(this.run, ["herdr", "pane", "read", paneId, "--source", "visible", "--format", "text"]);
+  }
+
   async sendLine(paneId: string, text: string) {
     await execOk(this.run, ["herdr", "pane", "send-text", paneId, text]);
     await execOk(this.run, ["herdr", "pane", "send-keys", paneId, "enter"]);

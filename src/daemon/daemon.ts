@@ -34,6 +34,8 @@ export interface DaemonOverrides {
   /** Disable the polling timer (tests drive ticks manually). */
   noTimer?: boolean;
   quiet?: boolean;
+  /** Waits between screen reads of a new pane (tests pass a no-op). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class Daemon {
@@ -85,6 +87,7 @@ export class Daemon {
       self: selfCommand(),
       now,
       log,
+      sleep: o.sleep,
     });
     this.gh = o.gh ?? new GhCli();
     this.run = o.exec ?? defaultExec;

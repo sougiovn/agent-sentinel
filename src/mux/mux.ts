@@ -41,6 +41,8 @@ export interface Multiplexer {
   paneExists(paneId: string): Promise<boolean>;
   /** Creates an interactive shell pane inside Sentinel's home session/workspace. */
   createPane(opts: CreatePaneOptions): Promise<PaneRef>;
+  /** The pane's current screen as plain text. */
+  readScreen(paneId: string): Promise<string>;
   /** Types a line into the pane and presses Enter. */
   sendLine(paneId: string, text: string): Promise<void>;
   /**
@@ -48,6 +50,40 @@ export interface Multiplexer {
    * of that worked (e.g. the app refused to switch sessions), so the caller can still report success.
    */
   focusPane(ref: PaneRef): Promise<string | undefined>;
+}
+
+export interface WaitForShellOptions {
+  /** Screen reads before giving up. */
+  maxReads?: number;
+  pollMs?: number;
+  /** Unchanged reads needed while the screen still shows only its first text (a login banner, say). */
+  quietReads?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Waits until a new pane's shell has drawn its prompt. Input typed while the shell is still starting can
+ * lose its first characters, and a launch line missing an opening quote leaves the shell waiting for more
+ * input. A login shell often prints a banner ("Last login: …") well before the prompt, so a screen that
+ * still shows only its first text has to stay unchanged for `quietReads` reads (1.5s); once something new
+ * is drawn after it, two identical reads in a row are enough. Returns false after `maxReads` reads (10s).
+ */
+export async function waitForShell(mux: Multiplexer, paneId: string, opts: WaitForShellOptions = {}): Promise<boolean> {
+  const { maxReads = 40, pollMs = 250, quietReads = 6, sleep = Bun.sleep } = opts;
+  let first: string | null = null;
+  let last: string | null = null;
+  let unchanged = 0;
+  for (let i = 0; i < maxReads; i++) {
+    const screen = (await mux.readScreen(paneId).catch(() => "")).trimEnd();
+    if (screen) {
+      first ??= screen;
+      unchanged = screen === last ? unchanged + 1 : 0;
+      if (unchanged >= (screen === first ? quietReads : 1)) return true;
+    }
+    last = screen || null;
+    await sleep(pollMs);
+  }
+  return false;
 }
 
 /** Recursively finds the first string value stored under `key`. */

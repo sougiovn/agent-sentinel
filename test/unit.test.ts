@@ -20,7 +20,7 @@ import { fakeGit } from "./fakes.ts";
 import type { Exec } from "../src/core/exec.ts";
 import { Store } from "../src/core/db.ts";
 import { RexMux } from "../src/mux/rex.ts";
-import type { CreatePaneOptions } from "../src/mux/mux.ts";
+import { waitForShell, type CreatePaneOptions, type Multiplexer } from "../src/mux/mux.ts";
 import { GhCli } from "../src/github/gh.ts";
 import { normalizeRemote, RepoLocator } from "../src/core/repo-locate.ts";
 import { linkWorktrees, listRepos, namesTicket, parseWorktreeList } from "../src/core/worktrees.ts";
@@ -627,6 +627,33 @@ describe("gh reviewThreads", () => {
   test("a missing PR yields no threads", async () => {
     const run: Exec = async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ data: { repository: null } }) });
     expect(await new GhCli(run).reviewThreads({ host: "github.com", owner: "a", repo: "b", number: 1 })).toEqual([]);
+  });
+});
+
+describe("waitForShell", () => {
+  const screens = (...frames: string[]) => {
+    let i = 0;
+    return { readScreen: async () => frames[Math.min(i++, frames.length - 1)]! } as unknown as Multiplexer;
+  };
+  const noSleep = { sleep: async () => {} };
+  test("a banner alone must stay quiet; a prompt drawn after it needs two identical reads", async () => {
+    const banner = "Last login: Tue";
+    const prompt = `${banner}\n➜  repo`;
+    let reads = 0;
+    const mux = screens("", banner, banner, prompt, prompt);
+    const counted = { readScreen: async (id: string) => (reads++, mux.readScreen(id)) } as unknown as Multiplexer;
+    expect(await waitForShell(counted, "p", noSleep)).toBe(true);
+    expect(reads).toBe(5);
+  });
+  test("a screen that only ever shows its first text is ready after the quiet period", async () => {
+    let reads = 0;
+    const m = { readScreen: async () => (reads++, "$ ") } as unknown as Multiplexer;
+    expect(await waitForShell(m, "p", noSleep)).toBe(true);
+    expect(reads).toBe(7);
+  });
+  test("gives up on a blank screen, and read errors count as blank", async () => {
+    const m = { readScreen: async () => Promise.reject(new Error("gone")) } as unknown as Multiplexer;
+    expect(await waitForShell(m, "p", { ...noSleep, maxReads: 5 })).toBe(false);
   });
 });
 

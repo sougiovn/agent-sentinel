@@ -4,7 +4,7 @@ import type { Paths } from "../core/paths.ts";
 import { fromPrId } from "../core/pr-ref.ts";
 import type { Item, SessionRow } from "../core/types.ts";
 import { renderFixPrompt, rexNamingNote, type FixGroup } from "../evaluator/prompt.ts";
-import type { Multiplexer } from "../mux/mux.ts";
+import { waitForShell, type Multiplexer } from "../mux/mux.ts";
 import { injectionLine, launchCommand, writePromptFile, type HookSignal } from "./launcher.ts";
 
 export interface DispatcherDeps {
@@ -15,6 +15,8 @@ export interface DispatcherDeps {
   self: string[];
   now: () => number;
   log: (msg: string) => void;
+  /** Waits between screen reads of a new pane; tests pass a no-op. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export type DispatchResult = "delivered" | "queued" | "paused" | "empty" | "failed";
@@ -264,6 +266,9 @@ export class Dispatcher {
     });
     store.setMeta(homeKey, ref.homeId);
     store.updateSession(session.session_id, { mux: mux.name, pane_id: ref.paneId, tab_id: ref.tabId });
+    if (!(await waitForShell(mux, ref.paneId, { sleep: this.d.sleep }))) {
+      this.d.log(`session ${session.session_id}: pane ${ref.paneId} showed no shell prompt; typing anyway`);
+    }
     return ref;
   }
 

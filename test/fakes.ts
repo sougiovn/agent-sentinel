@@ -120,6 +120,13 @@ export class FakeMux implements Multiplexer {
   async sendLine(id: string, text: string) {
     this.panes.get(id)!.lines.push(text);
   }
+  /** Screen reads per pane; a new pane's shell shows a prompt unless `slowShell` is set. */
+  reads = new Map<string, number>();
+  slowShell = false;
+  async readScreen(id: string) {
+    this.reads.set(id, (this.reads.get(id) ?? 0) + 1);
+    return this.slowShell ? "" : "$ ";
+  }
   focused: PaneRef[] = [];
   focusWarning: string | undefined;
   async focusPane(ref: PaneRef) {
@@ -194,6 +201,7 @@ export function makeDaemon(opts: { now?: () => number; exec?: Exec } = {}) {
     quiet: true,
     now: opts.now,
     exec: opts.exec ?? fakeGit(),
+    sleep: async () => {},
   });
   return { daemon, gh, evaluator, mux, jira, paths, store: daemon.store };
 }
