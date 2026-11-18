@@ -105,17 +105,26 @@ export function saveTheme(path: string, theme: Theme): void {
   renameSync(tmp, path);
 }
 
+/** Calls onEvent whenever something in dir may have changed. */
+export type DirWatcher = (dir: string, onEvent: () => void) => { close(): void };
+
+const fsDirWatcher: DirWatcher = (dir, onEvent): FSWatcher => watch(dir, () => onEvent());
+
 /**
  * Watches the theme file's directory and calls onChange with each parse result,
  * debounced. Any directory event is checked against the file's contents, because
  * atomic saves rename a temporary file over the target and Bun's fs.watch reports
  * only the temporary name. Deleting the file resets the theme to the defaults
- * without recreating it.
+ * without recreating it. `watchDir` replaces fs.watch as the event source (tests).
  */
-export function watchTheme(path: string, onChange: (r: ThemeResult) => void): FSWatcher {
+export function watchTheme(
+  path: string,
+  onChange: (r: ThemeResult) => void,
+  watchDir: DirWatcher = fsDirWatcher,
+): { close(): void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let lastText: string | null = existsSync(path) ? readFileSync(path, "utf8") : null;
-  return watch(dirname(path), () => {
+  return watchDir(dirname(path), () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
       const text = existsSync(path) ? readFileSync(path, "utf8") : null;

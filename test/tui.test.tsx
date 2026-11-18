@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test";
 import { testRender } from "@opentui/solid";
 import { rgbToHex, type CapturedFrame } from "@opentui/core";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getPaths, ensureHome } from "../src/core/paths.ts";
 import { defaultConfig, loadConfig, saveConfig } from "../src/core/config.ts";
 import { parsePrRef } from "../src/core/pr-ref.ts";
 import { App, type RpcClient } from "../src/tui/app.tsx";
-import { DEFAULT_THEME, saveTheme } from "../src/tui/theme.ts";
+import { DEFAULT_THEME, saveTheme, type DirWatcher } from "../src/tui/theme.ts";
 import { fakeGit, makeDaemon } from "./fakes.ts";
 
 test("TUI renders offline state and settings view, and saves an enum toggle", async () => {
@@ -74,20 +74,49 @@ test("TUI applies a custom theme and reloads it when the file changes", async ()
   const fgOf = (frame: CapturedFrame, text: string): string | undefined => {
     for (const line of frame.lines) for (const span of line.spans) if (span.text.includes(text)) return rgbToHex(span.fg);
   };
-  const t = await testRender(() => <App paths={paths} autoStart={false} />, { width: 120, height: 24 });
-  const frame = async (ms = 100) => {
-    await Bun.sleep(ms);
-    await t.renderOnce();
-    return t.captureSpans();
+  // fs.watch delivers no events inside some sandboxes (macOS Seatbelt), so poll
+  // the directory instead and report an event when any entry changes.
+  const pollDir: DirWatcher = (dir, onEvent) => {
+    const snapshot = () =>
+      readdirSync(dir)
+        .map((name) => {
+          const s = statSync(join(dir, name), { throwIfNoEntry: false });
+          return `${name}:${s?.ino}:${s?.mtimeMs}:${s?.size}`;
+        })
+        .join("|");
+    let last = snapshot();
+    const timer = setInterval(() => {
+      const next = snapshot();
+      if (next !== last) {
+        last = next;
+        onEvent();
+      }
+    }, 25);
+    return { close: () => clearInterval(timer) };
   };
-  expect(fgOf(await frame(), "Agent Sentinel")).toBe("#ff00ff");
+  const t = await testRender(() => <App paths={paths} autoStart={false} watchThemeDir={pollDir} />, {
+    width: 120,
+    height: 24,
+  });
+  const waitFor = async (done: (frame: CapturedFrame) => boolean, timeoutMs = 2000) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      await Bun.sleep(25);
+      await t.renderOnce();
+      const frame = t.captureSpans();
+      if (done(frame) || Date.now() > deadline) return frame;
+    }
+  };
+  const accent = (frame: CapturedFrame) => fgOf(frame, "Agent Sentinel");
+  expect(accent(await waitFor((f) => accent(f) === "#ff00ff"))).toBe("#ff00ff");
 
   saveTheme(paths.theme, { ...DEFAULT_THEME, accent: "#00ff00" }); // atomic save, via rename
-  expect(fgOf(await frame(500), "Agent Sentinel")).toBe("#00ff00");
+  expect(accent(await waitFor((f) => accent(f) === "#00ff00"))).toBe("#00ff00");
 
   writeFileSync(paths.theme, JSON.stringify({ accent: "#12345" })); // 5 hex digits is invalid
-  expect(fgOf(await frame(500), "Agent Sentinel")).toBe("#00ff00");
+  await waitFor(() => t.captureCharFrame().includes("Theme error"));
   expect(t.captureCharFrame()).toContain("Theme error (last good theme in use)");
+  expect(accent(t.captureSpans())).toBe("#00ff00");
   t.renderer.destroy();
 });
 

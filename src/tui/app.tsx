@@ -32,7 +32,7 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { filterRepos, repoLabel, tilde, worktreeLabel } from "./repo-labels.ts";
 import { filterHints, fitHints, HELP_HINT, hintText, type Hint } from "./shortcuts.ts";
 import { cycleEnum, displayValue, editText, FIELDS, filterFields, fullLabel, parseValue, SECTIONS, settingsRows, type Field, type SettingsRow } from "./settings.ts";
-import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type Theme } from "./theme.ts";
+import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type DirWatcher, type Theme } from "./theme.ts";
 
 type View = "list" | "history" | "settings" | "pick-pr" | "new-watch" | "repos";
 
@@ -88,6 +88,8 @@ export interface AppProps {
   openUrl?: (url: string) => void;
   /** Override how text is copied to the clipboard (tests). */
   copy?: (text: string) => void;
+  /** Override the event source for theme file changes (tests). */
+  watchThemeDir?: DirWatcher;
 }
 
 export function App(props: AppProps) {
@@ -354,7 +356,7 @@ export function App(props: AppProps) {
       setTheme(r.theme);
       setThemeError(null);
     } else setThemeError(r.error);
-  });
+  }, props.watchThemeDir);
   onCleanup(() => themeWatcher.close());
   void refresh();
   const interval = setInterval(refresh, 2000);
