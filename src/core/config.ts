@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { existsSync, readFileSync, writeFileSync, renameSync, watch, type FSWatcher } from "node:fs";
 import { dirname, basename } from "node:path";
+import { NOTIFY_EVENTS, NOTIFY_METHODS, type NotifyEvent } from "../notify/notifier.ts";
 
 export const DEFAULT_FIX_TEMPLATE = `Sentinel detected new activity on {{prUrl}} that needs your attention.
 
@@ -127,6 +128,18 @@ export const ConfigSchema = z.object({
       /** Jira statuses that end a ticket (case-insensitive). A tracked ticket found in one is marked done. */
       finalStatuses: z.array(z.string().min(1)).default(["Done", "CANCELED"]),
       promptTemplate: z.string().min(1).default(DEFAULT_TICKET_TEMPLATE),
+    })
+    .prefault({}),
+  /** macOS notifications for what the daemon does in the background. */
+  notifications: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** auto = terminal-notifier when it is installed, else osascript. */
+      method: z.enum(NOTIFY_METHODS).default("auto"),
+      /** One switch per event; all on by default. */
+      events: z
+        .object(Object.fromEntries(NOTIFY_EVENTS.map((e) => [e, z.boolean().default(true)])) as Record<NotifyEvent, z.ZodDefault<z.ZodBoolean>>)
+        .prefault({}),
     })
     .prefault({}),
   /** First prompt for a session started with "start now" when there is no feedback to fix yet. */

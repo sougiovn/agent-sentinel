@@ -1,4 +1,5 @@
 import { TICKET_MODES, type Config } from "../core/config.ts";
+import { NOTIFY_EVENT_LABELS, NOTIFY_EVENTS, NOTIFY_METHODS } from "../notify/notifier.ts";
 
 export type FieldKind = "enum" | "int" | "number" | "string" | "list" | "template";
 
@@ -53,6 +54,13 @@ export const FIELDS: Field[] = [
     f("spawn.startTimeoutSec", "Start timeout (s)", "int", (c) => c.spawn.startTimeoutSec, (c, v) => (c.spawn.startTimeoutSec = v)),
     f("spawn.busyTimeoutMin", "Busy timeout (min)", "int", (c) => c.spawn.busyTimeoutMin, (c, v) => (c.spawn.busyTimeoutMin = v)),
     f("spawn.sessionName", "Sentinel session name", "string", (c) => c.spawn.sessionName, (c, v) => (c.spawn.sessionName = v)),
+  ]),
+  ...under("General", "Notifications", [
+    bool("notifications.enabled", "Notifications", (c) => c.notifications.enabled, (c, v) => (c.notifications.enabled = v)),
+    f("notifications.method", "Method", "enum", (c) => c.notifications.method, (c, v) => (c.notifications.method = v), [...NOTIFY_METHODS]),
+    ...NOTIFY_EVENTS.map((e) =>
+      bool(`notifications.events.${e}`, NOTIFY_EVENT_LABELS[e], (c) => c.notifications.events[e], (c, v) => (c.notifications.events[e] = v)),
+    ),
   ]),
   ...under("Pull requests", "Feedback", [
     f("ignoredAuthors", "Ignored authors", "list", (c) => c.ignoredAuthors, (c, v) => (c.ignoredAuthors = v)),

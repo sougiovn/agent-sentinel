@@ -16,6 +16,7 @@ export const COMMANDS = [
   "stop",
   "restart",
   "skill",
+  "notify",
   "completion",
   "daemon",
   "help",
@@ -24,6 +25,7 @@ export const COMMANDS = [
 const SUBCOMMANDS: Record<string, readonly string[]> = {
   tickets: ["check", "dismiss"],
   skill: ["show", "install"],
+  notify: ["test"],
   completion: ["bash"],
 };
 
@@ -99,6 +101,8 @@ export async function complete(words: readonly string[], source: CompletionSourc
     }
     case "skill":
       return consumed.length === 1 ? { items: match(SUBCOMMANDS.skill!, current) } : { items: [] };
+    case "notify":
+      return consumed.length === 1 ? { items: match(SUBCOMMANDS.notify!, current) } : { items: [] };
     case "completion":
       return consumed.length === 1 ? { items: match(SUBCOMMANDS.completion!, current) } : { items: [] };
     default:

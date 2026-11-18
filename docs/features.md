@@ -290,6 +290,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel skill show` | Print the agent skill |
 | `sentinel skill install` | Install the skill to `~/.claude/skills/sentinel/` and `~/.codex/skills/sentinel/` |
 | `sentinel completion bash` | Print a bash completion script |
+| `sentinel notify test` | Send a test notification with the configured method; fails if the notifier can't run |
 | `sentinel daemon [--quiet]` | Run the daemon in the foreground |
 | `sentinel hook idle\|busy\|exit` | Used by agent hooks; not meant to be run by hand |
 
@@ -384,7 +385,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `?` | Show or hide this view's shortcuts |
 | `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
-**Settings** open in a dialog over the PR list, split into three tabs: **General** (multiplexer, poll interval, agents, spawning), **Pull requests** (feedback, evaluator, new watch defaults) and **Tickets** (the ticket agent, then one subheading per ticket source; Jira for now). Each tab groups its fields under subheadings, so labels don't repeat the group name. Each field shows its current value on one line (long values are cut short), and the list scrolls to keep the selection visible. Enums and on/off switches show every option, with the current one highlighted. The dialog is sized for the tallest tab, so it doesn't change size when switching.
+**Settings** open in a dialog over the PR list, split into three tabs: **General** (multiplexer, poll interval, agents, spawning, notifications), **Pull requests** (feedback, evaluator, new watch defaults) and **Tickets** (the ticket agent, then one subheading per ticket source; Jira for now). Each tab groups its fields under subheadings, so labels don't repeat the group name. Each field shows its current value on one line (long values are cut short), and the list scrolls to keep the selection visible. Enums and on/off switches show every option, with the current one highlighted. The dialog is sized for the tallest tab, so it doesn't change size when switching.
 
 | Key | Action |
 | --- | --- |
@@ -442,6 +443,9 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `jira.mode` | `"pr-watch"` | `pr-watch`, `pr` or `plan` |
 | `jira.transitionTo` | `"In Progress"` | Status to move a ticket to once its agent starts; `""` = never |
 | `jira.reviewStatus` | `"In Review"` | Status to move a ticket to once its session hands off a PR (`pr-watch`); `""` = never |
+| `notifications.enabled` | `true` | macOS notifications from the daemon (see [Notifications](#notifications)) |
+| `notifications.method` | `"auto"` | `auto` (terminal-notifier when installed, else osascript), `terminal-notifier` or `osascript` |
+| `notifications.events.<event>` | `true` each | `prWatched`, `ticketFound`, `ticketTransitioned`, `ticketDone`, `mergeConflict`, `fixNeeded`, `humanComments` |
 | `jira.promptTemplate` | built-in | Placeholders `{{key}}`, `{{url}}`, `{{summary}}`, `{{description}}`, `{{cwd}}`, `{{modeInstructions}}` |
 
 **Reloading:**
@@ -506,6 +510,28 @@ Database tables (`src/core/db.ts`, versioned migrations in `meta.schema_version`
 | `human_comments` | Human comments per PR: author, body, location, URL, resolved on GitHub, resolved by you, when and to which session it was delivered, whether the Stop hook asked for its draft, and the draft (summary, change, reply, who wrote it, when) |
 
 The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sentinel.db 'select id, last_status from prs'`. Write to it only while the daemon is stopped.
+
+## Notifications
+
+The daemon sends a macOS notification when something happens in the background:
+
+| Event | When |
+| --- | --- |
+| `prWatched` | An agent hands off a PR Sentinel wasn't watching yet. Reassigning a watched PR to another session doesn't count |
+| `ticketFound` | A Jira poll picks up a new ticket |
+| `ticketTransitioned` | Sentinel moves a ticket in Jira: to `jira.transitionTo` once its agent starts, to `jira.reviewStatus` once its session hands off a PR, or back to `jira.closedStatus` when that PR is closed unmerged. Failed moves don't notify |
+| `ticketDone` | A tracked ticket is found in one of `jira.finalStatuses` (it stops being tracked, and its PR stops being watched), or its PR is merged and the ticket moves to `jira.mergedStatus` |
+| `mergeConflict` | A poll finds that a PR newly conflicts with its base branch |
+| `fixNeeded` | The evaluator flags feedback (comments, failing checks) for the agent to fix |
+| `humanComments` | A poll finds comments from humans that weren't there before. Comments already on a PR when it's handed off don't count |
+
+Clicking a notification opens its PR or ticket (terminal-notifier only). A notification that can't be sent is logged to `sentinel.log` and never stops a poll. Turn each event off under `notifications.events`, or all of them with `notifications.enabled`, in the TUI's settings (General › Notifications) or `config.json`.
+
+**Delivery:**
+- With `method: "auto"`, Sentinel uses terminal-notifier (`brew install terminal-notifier`) when it is on the daemon's `PATH`, and `osascript` otherwise. It checks once per daemon run, so restart the daemon after installing it.
+- terminal-notifier is its own app: macOS asks once whether it may send notifications.
+- `osascript` notifications belong to Script Editor. macOS drops them silently until Script Editor is allowed in System Settings → Notifications. Open Script Editor once and run `display notification "hi"` there to get the prompt.
+- `sentinel notify test` sends one from your shell to check the setup.
 
 ## Agent skill
 

@@ -6,6 +6,8 @@ import type { Evaluator } from "../evaluator/evaluator.ts";
 import type { GhClient, PrActivity } from "../github/gh.ts";
 import { humanItems, newItems, normalize, resolvedInlineIds, type FilterOptions } from "../github/snapshot.ts";
 import type { Dispatcher } from "../spawn/dispatcher.ts";
+import { prLabel } from "../cli/format.ts";
+import { oneLine, type Notification } from "../notify/notifier.ts";
 
 export interface SentinelDeps {
   store: Store;
@@ -17,6 +19,8 @@ export interface SentinelDeps {
   log: (msg: string) => void;
   /** Called (inside the poll queue) when a watched PR is found merged or closed, before its data is wiped. */
   onPrClosed?: (id: string, state: "MERGED" | "CLOSED") => Promise<void>;
+  /** Tells the user about something that happened; never throws. */
+  notify?: (n: Notification) => void;
 }
 
 export interface NewSessionRequest {
@@ -135,6 +139,16 @@ export class Sentinel {
             now,
           );
           if (created && !req.includeExisting) this.d.store.setPrStatus(id, "no_changes", "Baseline recorded", now);
+          if (created) {
+            this.d.notify?.({
+              event: "prWatched",
+              title: "Watching a new PR",
+              subtitle: prLabel({ id, title: activity.view.title }),
+              body: `${req.agent} session ${sessionId.slice(0, 8)} · ${req.cwd}`,
+              url: prUrl(ref),
+              group: `pr:${id}`,
+            });
+          }
           results.push({ id, created, sessionId });
         } catch (e) {
           results.push({ id, created: false, error: (e as Error).message });
@@ -205,7 +219,9 @@ export class Sentinel {
 
     if (activity.view.title !== pr.title) store.setPrTitle(id, activity.view.title);
     this.syncMerge(id, activity);
-    await this.syncHumanComments(id, ref, activity, now);
+    const label = prLabel({ id, title: activity.view.title });
+    const newHumans = await this.syncHumanComments(id, ref, activity, now);
+    if (newHumans.length) this.notifyHumanComments(pr, label, newHumans);
 
     const fresh = newItems(normalize(activity), store.seenIds(id), await this.filterOptions(ref));
     if (fresh.length === 0) {
@@ -236,13 +252,32 @@ export class Sentinel {
       store.addEvent(id, "evaluated", verdict, now);
     }
     store.markSeen(id, verdict ? fresh : conflicts);
-    if (conflicts.length) store.addEvent(id, "merge_conflict", { items: conflicts.map((i) => i.id) }, now);
+    if (conflicts.length) {
+      store.addEvent(id, "merge_conflict", { items: conflicts.map((i) => i.id) }, now);
+      this.d.notify?.({
+        event: "mergeConflict",
+        title: "PR has a merge conflict",
+        subtitle: label,
+        body: `Conflicts with ${conflicts[0]!.baseRef ?? "the base branch"}; queued for the agent to resolve`,
+        url: pr.url,
+        group: `conflict:${id}`,
+      });
+    }
 
     const flagged: Item[] = [...conflicts];
     if (verdict?.shouldFix) {
       const wanted = new Set(verdict.items);
       const picked = wanted.size ? rest.filter((i) => wanted.has(i.id)) : rest;
-      flagged.push(...(picked.length ? picked : rest));
+      const fixes = picked.length ? picked : rest;
+      flagged.push(...fixes);
+      this.d.notify?.({
+        event: "fixNeeded",
+        title: `Feedback for the agent: ${fixes.length} item${fixes.length === 1 ? "" : "s"}`,
+        subtitle: label,
+        body: verdict.reason,
+        url: pr.url,
+        group: `fix:${id}`,
+      });
     }
     if (flagged.length === 0) {
       store.setPrStatus(id, "no_action", verdict?.reason ?? null, now);
@@ -261,9 +296,23 @@ export class Sentinel {
     if (mergeable && mergeable !== "UNKNOWN") this.d.store.setPrMerge(id, mergeable, baseRefName ?? null);
   }
 
-  private async syncHumanComments(id: string, ref: PrRef, activity: PrActivity, now: number) {
+  /** Returns the human comments seen for the first time. */
+  private async syncHumanComments(id: string, ref: PrRef, activity: PrActivity, now: number): Promise<Item[]> {
     const humans = humanItems(normalize(activity), await this.filterOptions(ref));
-    this.d.store.syncHumanComments(id, humans, resolvedInlineIds(activity), now);
+    return this.d.store.syncHumanComments(id, humans, resolvedInlineIds(activity), now);
+  }
+
+  private notifyHumanComments(pr: PrRow, label: string, items: Item[]) {
+    const authors = [...new Set(items.map((i) => (i.author ? `@${i.author}` : "someone")))];
+    const first = items[0]!;
+    this.d.notify?.({
+      event: "humanComments",
+      title: items.length === 1 ? `New comment from ${authors[0]}` : `${items.length} new human comments`,
+      subtitle: label,
+      body: items.length === 1 ? oneLine(first.body ?? "") || "(no text)" : `From ${authors.join(", ")}`,
+      url: first.url ?? pr.url,
+      group: `human:${pr.id}`,
+    });
   }
 
   private async attachLogTails(ref: PrRef, items: Item[]) {

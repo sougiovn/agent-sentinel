@@ -380,7 +380,8 @@ export class Store {
    * Makes the PR's human comments match GitHub: adds new ones, refreshes body and thread resolution,
    * and drops deleted ones. Local state (drafts, the user's resolution) is kept.
    */
-  syncHumanComments(prId: string, items: Item[], resolvedIds: Set<string>, now: number) {
+  /** Stores the PR's current human comments and drops deleted ones. Returns the comments it hadn't seen before. */
+  syncHumanComments(prId: string, items: Item[], resolvedIds: Set<string>, now: number): Item[] {
     const upsert = this.db.query(
       `INSERT INTO human_comments (pr_id, item_id, kind, author, body, url, path, line, created_at, first_seen_at, gh_resolved)
        VALUES ($p, $i, $k, $a, $b, $u, $path, $line, $c, $now, $r)
@@ -388,6 +389,8 @@ export class Store {
     );
     const remove = this.db.query("DELETE FROM human_comments WHERE pr_id = $p AND item_id = $i");
     const keep = new Set(items.map((i) => i.id));
+    const known = new Set(this.humanComments(prId).map((c) => c.item_id));
+    const added = items.filter((i) => i.kind !== "check" && i.kind !== "merge_conflict" && !known.has(i.id));
     this.db.transaction(() => {
       for (const it of items) {
         if (it.kind === "check" || it.kind === "merge_conflict") continue;
@@ -407,6 +410,7 @@ export class Store {
       }
       for (const row of this.humanComments(prId)) if (!keep.has(row.item_id)) remove.run({ p: prId, i: row.item_id });
     })();
+    return added;
   }
 
   humanComments(prId: string): HumanCommentRow[] {

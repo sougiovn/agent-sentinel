@@ -10,6 +10,7 @@ import type { EvalInput } from "../src/evaluator/prompt.ts";
 import type { Evaluator, Verdict } from "../src/evaluator/evaluator.ts";
 import type { GhClient, GhComment, GhCheck, GhPrView, ListPrsOptions, PrActivity, PrSummary } from "../src/github/gh.ts";
 import type { JiraClient, Ticket } from "../src/jira/acli.ts";
+import type { Notification } from "../src/notify/notifier.ts";
 import { MuxUnavailableError, type CreatePaneOptions, type Multiplexer, type PaneRef } from "../src/mux/mux.ts";
 
 export class FakeGh implements GhClient {
@@ -191,7 +192,8 @@ export class FakeJira implements JiraClient {
   }
 }
 
-export function makeDaemon(opts: { now?: () => number; exec?: Exec } = {}) {
+export function makeDaemon(opts: { now?: () => number; exec?: Exec; failNotifications?: boolean } = {}) {
+  const notifications: Notification[] = [];
   const home = mkdtempSync(join(tmpdir(), "sentinel-test-"));
   const paths = getPaths(home);
   const gh = new FakeGh();
@@ -208,6 +210,10 @@ export function makeDaemon(opts: { now?: () => number; exec?: Exec } = {}) {
     now: opts.now,
     exec: opts.exec ?? fakeGit(),
     sleep: async () => {},
+    sendNotification: async (n) => {
+      notifications.push(n as Notification);
+      if (opts.failNotifications) throw new Error("notifier down");
+    },
   });
-  return { daemon, gh, evaluator, mux, jira, paths, store: daemon.store };
+  return { daemon, gh, evaluator, mux, jira, paths, store: daemon.store, notifications };
 }

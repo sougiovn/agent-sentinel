@@ -56,6 +56,10 @@ source <(sentinel completion bash)
 
 Completion covers commands, options, the PRs Sentinel is already watching (`watch`, `unwatch`, `check`) and Jira ticket keys (`tickets dismiss`).
 
+### Notifications
+
+The daemon sends macOS notifications when an agent hands off a PR, a Jira ticket is picked up, moved or finished, and when a poll finds a merge conflict, feedback for the agent or new human comments. Install `terminal-notifier` (`brew install terminal-notifier`) so clicking one opens its PR or ticket. Without it, Sentinel uses `osascript`, whose notifications appear only once Script Editor is allowed in System Settings → Notifications. Check with `sentinel notify test`. Each event can be turned off under `notifications` in the config.
+
 ### TUI keys
 
 `↑/↓` select · `/` filter by repo or title · `enter` PR details (human comments and event history) · `o` open in browser · `n` watch one of your PRs · `g` repos and worktrees · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `A` go to the agent (focus its pane, or reopen it in a new tab) · `t` switch to the Jira tickets list (`o` open, `A` go to agent, `d` dismiss) · `v` try the sessions view (every session grouped by repo, with its PRs and tickets under it; `enter` expands a session's details with its evaluator spend and history) · `s` settings · `R` reload config and theme · `S` retry starting the daemon · `?` list every shortcut for the current screen (`/` filters it) · `q` quit. The footer shows as many shortcuts as fit and always ends with `? help`; `?` works everywhere, even while typing in a filter. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.

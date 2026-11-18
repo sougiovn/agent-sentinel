@@ -4,6 +4,8 @@ import { expandHome } from "../core/repo-locate.ts";
 import { renderTicketPrompt } from "../evaluator/prompt.ts";
 import { keysJql, ticketJql, type JiraClient, type Ticket } from "../jira/acli.ts";
 import type { Dispatcher } from "../spawn/dispatcher.ts";
+import type { Notification } from "../notify/notifier.ts";
+import type { TicketRow } from "../core/types.ts";
 
 export interface TicketWatcherDeps {
   store: Store;
@@ -12,6 +14,8 @@ export interface TicketWatcherDeps {
   config: () => Config;
   now: () => number;
   log: (msg: string) => void;
+  /** Tells the user about something that happened; never throws. */
+  notify?: (n: Notification) => void;
 }
 
 export interface TicketPollResult {
@@ -29,6 +33,17 @@ export interface TicketPollResult {
  */
 export class TicketWatcher {
   constructor(private d: TicketWatcherDeps) {}
+
+  private notifyMoved(t: Pick<TicketRow, "key" | "url" | "summary">, status: string, why: string) {
+    this.d.notify?.({
+      event: "ticketTransitioned",
+      title: `${t.key} moved to ${status}`,
+      subtitle: t.summary ?? undefined,
+      body: why,
+      url: t.url,
+      group: `ticket:${t.key}`,
+    });
+  }
 
   async poll(): Promise<TicketPollResult> {
     const cfg = this.d.config().jira;
@@ -58,10 +73,19 @@ export class TicketWatcher {
       const row = open.find((r) => r.key === t.key);
       if (!row || !final.has(t.status.toLowerCase())) continue;
       store.setTicketStatus(t.key, "done", `Ticket is ${t.status} in Jira`);
-      if (row.pr_id && store.getPr(row.pr_id)) {
-        store.deletePr(row.pr_id);
+      const watched = !!row.pr_id && !!store.getPr(row.pr_id);
+      if (watched) {
+        store.deletePr(row.pr_id!);
         log(`${t.key} is ${t.status}; stopped watching ${row.pr_id}`);
       } else log(`${t.key} is ${t.status}; marked done`);
+      this.d.notify?.({
+        event: "ticketDone",
+        title: `${t.key} is ${t.status}`,
+        subtitle: row.summary ?? undefined,
+        body: watched ? `No longer tracked; stopped watching ${row.pr_id}` : "No longer tracked",
+        url: row.url,
+        group: `ticket:${t.key}`,
+      });
       finished.push(t.key);
     }
     return finished;
@@ -88,6 +112,7 @@ export class TicketWatcher {
       await this.d.jira.transition(ticket.key, cfg.reviewStatus);
       store.setTicketStatus(ticket.key, "in_review", `PR ${url} handed off; moved to ${cfg.reviewStatus}`);
       log(`${ticket.key}: PR ${prId} handed off, moved to ${cfg.reviewStatus}`);
+      this.notifyMoved(ticket, cfg.reviewStatus, `The agent opened ${url}`);
     } catch (e) {
       const msg = `PR ${url} handed off, but moving the ticket to ${cfg.reviewStatus} failed: ${(e as Error).message}`;
       store.setTicketStatus(ticket.key, "transition_failed", msg);
@@ -117,6 +142,16 @@ export class TicketWatcher {
       await this.d.jira.transition(ticket.key, target);
       store.setTicketStatus(ticket.key, next, `${what}; moved to ${target}`);
       log(`${ticket.key}: ${what}, moved to ${target}`);
+      if (merged) {
+        this.d.notify?.({
+          event: "ticketDone",
+          title: `${ticket.key} moved to ${target}`,
+          subtitle: ticket.summary ?? undefined,
+          body: `${what}; no longer tracked`,
+          url: ticket.url,
+          group: `ticket:${ticket.key}`,
+        });
+      } else this.notifyMoved(ticket, target, what);
     } catch (e) {
       const msg = `${what}, but moving the ticket to ${target} failed: ${(e as Error).message}`;
       store.setTicketStatus(ticket.key, "transition_failed", msg);
@@ -141,6 +176,14 @@ export class TicketWatcher {
       });
       log(`picked up Jira ticket ${t.key}`);
       row = store.getTicket(t.key)!;
+      this.d.notify?.({
+        event: "ticketFound",
+        title: `New Jira ticket: ${t.key}`,
+        subtitle: t.summary,
+        body: dispatcher.atCapacity() ? "Waiting for a free agent slot" : "Starting an agent session for it",
+        url: t.url,
+        group: `ticket:${t.key}`,
+      });
     } else if (row.summary !== t.summary) store.setTicketSummary(t.key, t.summary);
 
     if (row.dismissed) return false;
@@ -178,6 +221,7 @@ export class TicketWatcher {
       try {
         await this.d.jira.transition(t.key, cfg.transitionTo);
         store.setTicketStatus(t.key, "started", `Agent started; moved to ${cfg.transitionTo}`);
+        this.notifyMoved(t, cfg.transitionTo, "An agent session started working on it");
       } catch (e) {
         const msg = `Agent started, but moving the ticket to ${cfg.transitionTo} failed: ${(e as Error).message}`;
         store.setTicketStatus(t.key, "transition_failed", msg);

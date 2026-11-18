@@ -35,6 +35,7 @@ Usage:
   sentinel reload               Reload config.json
   sentinel completion bash      Print a bash completion script
   sentinel skill show|install   Print or install the agent skill
+  sentinel notify test           Send a test notification (checks they reach you)
   sentinel daemon               Run the daemon in the foreground
 
 PRs: URL or owner/repo#123. Data lives in ~/.config/sentinel (override with SENTINEL_HOME).`;
@@ -227,6 +228,23 @@ async function main(argv: string[]) {
       });
       const lines = result.dirs ? [...result.items, ":dir"] : result.items;
       if (lines.length) process.stdout.write(`${lines.join("\n")}\n`);
+      return;
+    }
+    case "notify": {
+      if (rest[0] !== "test") die("usage: sentinel notify test");
+      const { loadConfig } = await import("../core/config.ts");
+      const { MacNotifier } = await import("../notify/notifier.ts");
+      const { exec } = await import("../core/exec.ts");
+      const loaded = loadConfig(paths.config);
+      const method = loaded.ok ? loaded.config.notifications.method : "auto";
+      // Sent directly rather than through cliNotifier, so a failure is reported as an error.
+      await new MacNotifier(exec, () => method).send({
+        title: "Sentinel",
+        subtitle: "Test notification",
+        body: "Notifications from Sentinel reach you.",
+      });
+      console.log(`Sent a test notification (method: ${method}). If none showed up, see "Notifications" in docs/features.md.`);
+      if (loaded.ok && !loaded.config.notifications.enabled) console.log("Note: notifications.enabled is false, so the daemon sends none.");
       return;
     }
     case "skill": {

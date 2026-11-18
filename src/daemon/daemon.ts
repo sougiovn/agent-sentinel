@@ -17,6 +17,7 @@ import type { RefreshResult, RepoView, RpcMethod, RpcMethods, RpcRequest, RpcRes
 import { Sentinel } from "./sentinel.ts";
 import { TicketWatcher } from "./tickets.ts";
 import { AcliJira, type JiraClient } from "../jira/acli.ts";
+import { MacNotifier, type Notification, type SendNotification } from "../notify/notifier.ts";
 
 const PROMPT_RETENTION_MS = 7 * 24 * 3600_000;
 
@@ -36,6 +37,8 @@ export interface DaemonOverrides {
   quiet?: boolean;
   /** Waits between screen reads of a new pane (tests pass a no-op). */
   sleep?: (ms: number) => Promise<void>;
+  /** Sends a macOS notification (tests record them instead). */
+  sendNotification?: SendNotification;
 }
 
 export class Daemon {
@@ -79,6 +82,8 @@ export class Daemon {
     this.store = new Store(paths.db);
     const now = (this.now = o.now ?? Date.now);
     const log = (m: string) => this.log(m);
+    const send = o.sendNotification ?? new MacNotifier(defaultExec, () => this.config.notifications.method).send;
+    const notify = (n: Notification) => this.notify(send, n);
     this.dispatcher = new Dispatcher({
       store: this.store,
       config: () => this.config,
@@ -108,6 +113,7 @@ export class Daemon {
       now,
       log,
       onPrClosed: (id, state) => this.tickets.prClosed(id, state),
+      notify,
     });
     this.tickets = new TicketWatcher({
       store: this.store,
@@ -116,7 +122,15 @@ export class Daemon {
       config: () => this.config,
       now,
       log,
+      notify,
     });
+  }
+
+  /** Sends a notification in the background when it and its event are switched on. Failures are only logged. */
+  private notify(send: SendNotification, n: Notification) {
+    const cfg = this.config.notifications;
+    if (!cfg.enabled || !cfg.events[n.event]) return;
+    void send(n).catch((e: Error) => this.log(`notification (${n.event}) failed: ${e.message}`));
   }
 
   log(msg: string) {
