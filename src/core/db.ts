@@ -357,6 +357,10 @@ export class Store {
     return this.db.query<TicketRow, { s: string }>("SELECT * FROM tickets WHERE session_id = $s").get({ s: sessionId });
   }
 
+  ticketForPr(prId: string): TicketRow | null {
+    return this.db.query<TicketRow, { p: string }>("SELECT * FROM tickets WHERE pr_id = $p").get({ p: prId });
+  }
+
   setTicketPr(key: string, prId: string) {
     this.db.query("UPDATE tickets SET pr_id = $p WHERE key = $k").run({ k: key, p: prId });
   }

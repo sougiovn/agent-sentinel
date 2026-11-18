@@ -120,6 +120,10 @@ export const ConfigSchema = z.object({
       transitionTo: z.string().default("In Progress"),
       /** Status to move a ticket to once its session hands off a PR (pr-watch mode). "" = don't transition. */
       reviewStatus: z.string().default("In Review"),
+      /** Status to move a ticket to once the PR it handed off is merged. "" = don't transition. */
+      mergedStatus: z.string().default("Done"),
+      /** Status to move a ticket back to when that PR is closed without merging. "" = don't transition. */
+      closedStatus: z.string().default("In Progress"),
       promptTemplate: z.string().min(1).default(DEFAULT_TICKET_TEMPLATE),
     })
     .prefault({}),

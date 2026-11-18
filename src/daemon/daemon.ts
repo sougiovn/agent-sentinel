@@ -107,6 +107,7 @@ export class Daemon {
       config: () => this.config,
       now,
       log,
+      onPrClosed: (id, state) => this.tickets.prClosed(id, state),
     });
     this.tickets = new TicketWatcher({
       store: this.store,

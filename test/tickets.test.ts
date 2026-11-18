@@ -430,6 +430,55 @@ describe("PR handoff moves the ticket to review", () => {
     expect(t.store.getTicket("CP-1")!.last_status).toBe("in_review");
   });
 
+  async function closePr(t: Awaited<ReturnType<typeof startedTicket>>, state: "MERGED" | "CLOSED") {
+    const { parsePrRef } = await import("../src/core/pr-ref.ts");
+    t.gh.get(parsePrRef("acme/web#1")).view.state = state;
+    await t.daemon.sentinel.checkPr("github.com/acme/web#1");
+  }
+
+  test("a merged PR moves its ticket to Done", async () => {
+    const t = await startedTicket();
+    await watchFrom(t);
+    await closePr(t, "MERGED");
+    const row = t.store.getTicket("CP-1")!;
+    expect(row.last_status).toBe("done");
+    expect(row.last_reason).toContain("merged; moved to Done");
+    expect(t.jira.transitions.at(-1)).toEqual({ key: "CP-1", status: "Done" });
+    expect(t.store.getPr("github.com/acme/web#1")).toBeNull();
+  });
+
+  test("a PR closed without merging moves its ticket back to In Progress", async () => {
+    const t = await startedTicket();
+    await watchFrom(t);
+    await closePr(t, "CLOSED");
+    const row = t.store.getTicket("CP-1")!;
+    expect(row.last_status).toBe("started");
+    expect(row.last_reason).toContain("closed without merging; moved to In Progress");
+    expect(t.jira.transitions.at(-1)).toEqual({ key: "CP-1", status: "In Progress" });
+  });
+
+  test("a closed PR with no ticket leaves Jira alone; blank statuses skip the write", async () => {
+    const t = await startedTicket((c) => (c.jira.mergedStatus = ""));
+    await watchFrom(t, "someone-else");
+    await closePr(t, "MERGED");
+    expect(t.jira.transitions).toHaveLength(1);
+
+    const u = await startedTicket((c) => (c.jira.mergedStatus = ""));
+    await watchFrom(u);
+    await closePr(u, "MERGED");
+    expect(u.jira.transitions).toHaveLength(2);
+    expect(u.store.getTicket("CP-1")!.last_status).toBe("done");
+  });
+
+  test("a failed close transition is reported and the PR is still unwatched", async () => {
+    const t = await startedTicket();
+    await watchFrom(t);
+    t.jira.failTransition = new Error("no transition");
+    await closePr(t, "MERGED");
+    expect(t.store.getTicket("CP-1")!.last_status).toBe("transition_failed");
+    expect(t.store.getPr("github.com/acme/web#1")).toBeNull();
+  });
+
   test("the pr-watch prompt tells the agent Sentinel owns the status", () => {
     const p = renderTicketPrompt(defaultConfig().jira.promptTemplate, { key: "K", url: "u", summary: "s", description: "", cwd: "/w", mode: "pr-watch" });
     expect(p).toContain("Don't change the ticket's status yourself");

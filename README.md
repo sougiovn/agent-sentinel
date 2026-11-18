@@ -35,7 +35,7 @@ Or press `n` in the dashboard to watch one of your open PRs without an agent ses
 ### Jira tickets
 
 Set `jira.enabled` (in `config.json`, or Tickets › Jira › Pick up tickets in settings), then assign yourself a ticket in To Do or In Progress and add the label `sentinel` (`jira.label`). On the next Jira poll (every `jira.pollIntervalSec`, 600s by default) Sentinel starts a new Claude session in `~/work` with the ticket. The agent works out the repository from the ticket and asks you if it isn't sure. Sentinel then moves the ticket to In Progress. Each ticket gets one session, ever. `jira.mode` sets how far the agent goes:
-- `pr-watch` (default): implement, open a PR, and hand it to Sentinel with `sentinel watch`. Sentinel then moves the ticket to In Review (`jira.reviewStatus`).
+- `pr-watch` (default): implement, open a PR, and hand it to Sentinel with `sentinel watch`. Sentinel then moves the ticket to In Review (`jira.reviewStatus`). When that PR is merged, the ticket moves to Done (`jira.mergedStatus`); when it's closed without merging, back to In Progress (`jira.closedStatus`).
 - `pr`: implement and open a PR.
 - `plan`: write a plan and wait.
 
@@ -150,6 +150,8 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
     "mode": "pr-watch",                  // "pr-watch" | "pr" | "plan"
     "transitionTo": "In Progress",       // when the agent starts; "" = don't
     "reviewStatus": "In Review",         // when the ticket's session hands off its PR; "" = don't
+    "mergedStatus": "Done",              // when that PR is merged; "" = don't
+    "closedStatus": "In Progress",       // when that PR is closed without merging; "" = don't
     "promptTemplate": "… {{key}} … {{url}} … {{summary}} … {{description}} … {{cwd}} … {{modeInstructions}} …"
   }
 }

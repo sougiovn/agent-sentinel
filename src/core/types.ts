@@ -108,7 +108,7 @@ export interface EventRow {
   detail: unknown;
 }
 
-export type TicketStatus = "queued" | "started" | "in_review" | "spawn_failed" | "transition_failed";
+export type TicketStatus = "queued" | "started" | "in_review" | "done" | "spawn_failed" | "transition_failed";
 
 /** A Jira ticket Sentinel picked up. The row stays so a ticket never gets a second session. */
 export interface TicketRow {

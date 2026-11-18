@@ -15,6 +15,8 @@ export interface SentinelDeps {
   config: () => Config;
   now: () => number;
   log: (msg: string) => void;
+  /** Called (inside the poll queue) when a watched PR is found merged or closed, before its data is wiped. */
+  onPrClosed?: (id: string, state: "MERGED" | "CLOSED") => Promise<void>;
 }
 
 export interface NewSessionRequest {
@@ -195,6 +197,7 @@ export class Sentinel {
     }
 
     if (activity.view.state !== "OPEN") {
+      await this.d.onPrClosed?.(id, activity.view.state).catch((e: Error) => log(`${id}: closed-PR hook failed: ${e.message}`));
       store.deletePr(id);
       log(`${id} is ${activity.view.state.toLowerCase()}; stopped monitoring and wiped its data`);
       return;

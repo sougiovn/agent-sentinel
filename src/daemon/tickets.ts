@@ -67,6 +67,35 @@ export class TicketWatcher {
     }
   }
 
+  /**
+   * The PR a ticket's session handed off was merged (move the ticket to `jira.mergedStatus`) or closed without
+   * merging (move it back to `jira.closedStatus`). PRs that don't belong to a ticket are ignored.
+   */
+  async prClosed(prId: string, state: "MERGED" | "CLOSED"): Promise<void> {
+    const { store, log } = this.d;
+    const cfg = this.d.config().jira;
+    const ticket = store.ticketForPr(prId);
+    if (!cfg.enabled || !ticket) return;
+    const url = store.getPr(prId)?.url ?? prId;
+    const merged = state === "MERGED";
+    const target = merged ? cfg.mergedStatus : cfg.closedStatus;
+    const what = merged ? `PR ${url} merged` : `PR ${url} closed without merging`;
+    const next = merged ? "done" : "started";
+    if (!target) {
+      store.setTicketStatus(ticket.key, next, what);
+      return;
+    }
+    try {
+      await this.d.jira.transition(ticket.key, target);
+      store.setTicketStatus(ticket.key, next, `${what}; moved to ${target}`);
+      log(`${ticket.key}: ${what}, moved to ${target}`);
+    } catch (e) {
+      const msg = `${what}, but moving the ticket to ${target} failed: ${(e as Error).message}`;
+      store.setTicketStatus(ticket.key, "transition_failed", msg);
+      log(`${ticket.key}: ${msg}`);
+    }
+  }
+
   /** Records a new ticket and starts its session; retries tickets whose session never started. */
   private async pickUp(t: Ticket): Promise<boolean> {
     const { store, dispatcher, log } = this.d;

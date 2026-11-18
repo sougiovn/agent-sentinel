@@ -90,6 +90,8 @@ export const FIELDS: Field[] = [
     f("jira.command", "acli command", "string", (c) => c.jira.command, (c, v) => (c.jira.command = v)),
     { ...f("jira.transitionTo", "Status on start (blank = never)", "string", (c) => c.jira.transitionTo, (c, v) => (c.jira.transitionTo = v)), allowEmpty: true },
     { ...f("jira.reviewStatus", "Status after PR handoff (blank = never)", "string", (c) => c.jira.reviewStatus, (c, v) => (c.jira.reviewStatus = v)), allowEmpty: true },
+    { ...f("jira.mergedStatus", "Status after PR merge (blank = never)", "string", (c) => c.jira.mergedStatus, (c, v) => (c.jira.mergedStatus = v)), allowEmpty: true },
+    { ...f("jira.closedStatus", "Status after PR closed unmerged (blank = never)", "string", (c) => c.jira.closedStatus, (c, v) => (c.jira.closedStatus = v)), allowEmpty: true },
   ]),
 ];
 

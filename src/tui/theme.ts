@@ -25,6 +25,7 @@ export const DEFAULT_STATUS_COLORS: Record<string, string> = {
   queued: "#3498db",
   started: "#f1c40f",
   in_review: "#2ecc71",
+  done: "#27ae60",
   transition_failed: "#e67e22",
 };
 
