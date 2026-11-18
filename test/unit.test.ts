@@ -498,7 +498,7 @@ describe("settings filter", () => {
   });
 
   test("splits fields into tabs and lays them out under group headings", () => {
-    expect(SECTIONS).toEqual(["General", "Pull requests", "Tickets"]);
+    expect(SECTIONS).toEqual(["General", "Pull requests", "Tickets", "Routines"]);
     const pr = FIELDS.filter((f) => f.section === "Pull requests");
     const rows = settingsRows(filterFields(pr, "model"));
     expect(rows.map((r) => (r.kind === "field" ? r.field.key : `group:${r.title}`))).toEqual([
@@ -683,6 +683,8 @@ describe("store migrations", () => {
     old.db.exec(`
       DROP TABLE tickets;
       DROP TABLE human_comments;
+      DROP TABLE routines;
+      DROP TABLE routine_runs;
       ALTER TABLE prs DROP COLUMN title;
       ALTER TABLE prs DROP COLUMN mergeable;
       ALTER TABLE prs DROP COLUMN base_ref;

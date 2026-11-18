@@ -108,8 +108,8 @@ export function launchCommand(spec: LaunchSpec, config: Config, paths: Paths, se
 }
 
 /** One-line message typed into an agent that is already running and idle. */
-export function injectionLine(promptFile: string): string {
-  return `Sentinel has new PR feedback for you. Read the file ${promptFile} and follow its instructions.`;
+export function injectionLine(promptFile: string, what = "new PR feedback"): string {
+  return `Sentinel has ${what} for you. Read the file ${promptFile} and follow its instructions.`;
 }
 
 export function writePromptFile(paths: Paths, sessionId: string, text: string, now: number): string {

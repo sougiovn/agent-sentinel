@@ -11,6 +11,7 @@ export const COMMANDS = [
   "comments",
   "draft",
   "tickets",
+  "routines",
   "status",
   "reload",
   "stop",
@@ -25,6 +26,7 @@ export const COMMANDS = [
 
 const SUBCOMMANDS: Record<string, readonly string[]> = {
   tickets: ["check", "dismiss"],
+  routines: ["run", "check"],
   skill: ["show", "install"],
   swiftbar: ["install"],
   notify: ["test"],
@@ -38,6 +40,7 @@ const OPTIONS: Record<string, readonly string[]> = {
   draft: ["--summary", "--change", "--reply"],
   status: ["--json"],
   tickets: ["--json"],
+  routines: ["--json"],
   daemon: ["--quiet"],
   swiftbar: ["--force"],
 };
@@ -50,6 +53,8 @@ export interface CompletionSource {
   watchedPrs: () => Promise<string[]>;
   /** Keys of the Jira tickets the daemon picked up. */
   ticketKeys: () => Promise<string[]>;
+  /** Ids of the routines in the routines folder. */
+  routineIds?: () => Promise<string[]>;
 }
 
 export interface CompletionResult {
@@ -102,6 +107,14 @@ export async function complete(words: readonly string[], source: CompletionSourc
       }
       return { items: [] };
     }
+    case "routines": {
+      if (consumed.length === 1) return { items: match([...SUBCOMMANDS.routines!, ...OPTIONS.routines!], current) };
+      if (consumed[1] === "run" && consumed.length === 2) {
+        const ids = await (source.routineIds?.() ?? Promise.resolve([])).catch(() => [] as string[]);
+        return { items: match(ids, current) };
+      }
+      return { items: [] };
+    }
     case "skill":
       return consumed.length === 1 ? { items: match(SUBCOMMANDS.skill!, current) } : { items: [] };
     case "notify":
@@ -119,7 +132,7 @@ export async function complete(words: readonly string[], source: CompletionSourc
 /** `--json` only applies to the ticket list, not to `check` or `dismiss`. */
 function optionsFor(consumed: readonly string[]): readonly string[] {
   const command = consumed[0];
-  if (command === "tickets" && consumed.length > 1) return [];
+  if ((command === "tickets" || command === "routines") && consumed.length > 1) return [];
   if (command === "swiftbar" && consumed[1] !== "install") return [];
   return OPTIONS[command!] ?? [];
 }

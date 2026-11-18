@@ -53,7 +53,8 @@ test("TUI renders offline state and settings view, and saves an enum toggle", as
   expect(tab).not.toContain("Multiplexer");
 
   t.mockInput.pressTab({ shift: true });
-  t.mockInput.pressTab({ shift: true }); // wraps back to Tickets
+  t.mockInput.pressTab({ shift: true }); // wraps back to Routines
+  t.mockInput.pressTab({ shift: true }); // then Tickets
   t.mockInput.pressKey("/");
   await Bun.sleep(50);
   await t.mockInput.typeText("model"); // the filter only searches the current tab
@@ -1029,5 +1030,39 @@ test("TUI sessions view: sessions by repo with their PRs and tickets, and action
   expect(await frame()).toContain("Fix login redirect");
   t.mockInput.pressKey("v"); // no longer switches views
   expect(await frame()).toContain("Sessions · 3");
+  t.renderer.destroy();
+});
+
+test("TUI routines view lists routines, runs one now, and shows its session in the sessions view", async () => {
+  const t0 = makeDaemon();
+  mkdirSync(join(t0.paths.routinesDir, "morning-digest"), { recursive: true });
+  writeFileSync(join(t0.paths.routinesDir, "morning-digest", "ROUTINE.md"), "---\nname: Morning digest\nschedule: \"0 8 * * 1-5\"\n---\nList my PRs.\n");
+  mkdirSync(join(t0.paths.routinesDir, "Bad_Dir"));
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} />, { width: 160, height: 30 });
+  const frame = async (ms = 80) => {
+    await Bun.sleep(ms);
+    await t.renderOnce();
+    return t.captureCharFrame();
+  };
+  await frame();
+  t.mockInput.pressKey("t");
+  let f = await frame();
+  expect(f).toContain("Routines · 2");
+  expect(f).toContain("Bad_Dir");
+  expect(f).toContain("lower kebab-case");
+  t.mockInput.pressArrow("down");
+  f = await frame();
+  expect(f).toContain("morning-digest - Morning digest");
+  expect(f).toContain("0 8 * * 1-5");
+  t.mockInput.pressKey("x");
+  f = await frame(300);
+  expect(f).toContain("Started routine morning-digest");
+  expect(t0.store.getRoutine("morning-digest")!.last_status).toBe("started");
+  t.mockInput.pressEscape();
+  f = await frame();
+  expect(f).toContain("Sessions · 1");
+  expect(f).toContain("Routines");
+  expect(f).toContain("⏱ morning-digest");
   t.renderer.destroy();
 });

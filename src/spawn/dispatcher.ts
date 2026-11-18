@@ -197,10 +197,37 @@ export class Dispatcher {
     }
   }
 
-  /** Names a session's pane (and tab) after its Jira ticket or PRs, e.g. `CP-7713` or `repo#42`. */
+  /**
+   * Types a prompt into a session Sentinel owns, launching or resuming the agent as needed: a routine run.
+   * Refused (`queued`) while the session is busy or Sentinel is already typing into it.
+   */
+  async runPrompt(sessionId: string, text: (session: SessionRow) => string, hooks: DeliverHooks): Promise<DispatchResult> {
+    if (this.inFlight.has(sessionId)) return "queued";
+    this.inFlight.add(sessionId);
+    try {
+      const session = this.d.store.getSession(sessionId);
+      if (!session) return "empty";
+      if (session.paused) return "paused";
+      if (this.isBusy(sessionId) || session.awaiting_ack_since !== null) return "queued";
+      return await this.deliver(session, text(session), {}, hooks, "a routine to run");
+    } finally {
+      this.inFlight.delete(sessionId);
+    }
+  }
+
+  /** The session is working, or Sentinel typed into it and is waiting for the agent to start. */
+  isRunning(sessionId: string): boolean {
+    if (this.inFlight.has(sessionId)) return true;
+    const s = this.d.store.getSession(sessionId);
+    return !!s && (s.awaiting_ack_since !== null || this.isBusy(sessionId));
+  }
+
+  /** Names a session's pane (and tab) after its Jira ticket, routine or PRs, e.g. `CP-7713`, `morning-digest` or `repo#42`. */
   private paneLabel(session: SessionRow): string {
     const ticket = this.d.store.ticketForSession(session.session_id);
     if (ticket) return ticket.key;
+    const run = this.d.store.latestRunForSession(session.session_id);
+    if (run) return run.routine_id;
     const prs = this.d.store.prsForSession(session.session_id).map((pr) => {
       const ref = fromPrId(pr.id);
       return `${ref.repo}#${ref.number}`;
@@ -214,6 +241,8 @@ export class Dispatcher {
     text: string,
     prs: Record<string, string[]>,
     hooks: DeliverHooks,
+    /** What the one-line pointer typed into a running agent says it has, e.g. "new PR feedback". */
+    what?: string,
   ): Promise<DispatchResult> {
     const { store } = this.d;
     const sessionId = session.session_id;
@@ -247,7 +276,7 @@ export class Dispatcher {
         paneId = (await this.openPane(mux, session)).paneId;
         await mux.sendLine(paneId, launch());
       } else if (session.agent_running && session.started) {
-        await mux.sendLine(paneId, injectionLine(promptFile));
+        await mux.sendLine(paneId, injectionLine(promptFile, what));
       } else {
         await mux.sendLine(paneId, launch());
       }
@@ -398,6 +427,7 @@ export class Dispatcher {
       awaiting_ack_since: null,
       awaiting_ack: null,
     });
+    store.endRoutineRun(sessionId, "finished", signal === "exit" ? "Agent exited" : "Agent finished");
     for (const pr of store.prsForSession(sessionId)) {
       if (pr.last_status === "fix_running") {
         store.setPrStatus(pr.id, "fix_spawned", signal === "exit" ? "Agent exited" : "Agent finished");
@@ -446,6 +476,7 @@ export class Dispatcher {
       }
       const ticket = store.ticketForSession(s.session_id);
       if (ticket?.last_status === "started") store.setTicketStatus(ticket.key, "spawn_failed", msg);
+      store.endRoutineRun(s.session_id, "start_failed", msg);
       this.d.log(`session ${s.session_id}: ${msg}`);
     }
   }

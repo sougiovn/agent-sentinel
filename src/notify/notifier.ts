@@ -9,6 +9,10 @@ export const NOTIFY_EVENTS = [
   "mergeConflict",
   "fixNeeded",
   "humanComments",
+  "routineStarted",
+  "routineSkipped",
+  "routineFailed",
+  "routineInvalid",
 ] as const;
 export type NotifyEvent = (typeof NOTIFY_EVENTS)[number];
 
@@ -21,6 +25,10 @@ export const NOTIFY_EVENT_LABELS: Record<NotifyEvent, string> = {
   mergeConflict: "PR has a merge conflict",
   fixNeeded: "Feedback sent to the agent",
   humanComments: "New human comments",
+  routineStarted: "Routine run started",
+  routineSkipped: "Routine run skipped (previous run still going)",
+  routineFailed: "Routine run failed to start",
+  routineInvalid: "Routine file is invalid",
 };
 
 export const NOTIFY_METHODS = ["auto", "terminal-notifier", "osascript"] as const;

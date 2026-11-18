@@ -2,6 +2,9 @@ import type { EventRow, HumanCommentRow, PrRow, SessionRow, TicketRow } from "..
 import type { WatchRequest, WatchResult } from "./sentinel.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
 import type { GoToAgentResult, OpenCommandResult } from "../spawn/dispatcher.ts";
+import type { RoutineListEntry, RunOutcome } from "./routines.ts";
+
+export type { RoutineListEntry, RunOutcome };
 
 export interface StatusInfo {
   pid: number;
@@ -25,6 +28,16 @@ export interface StatusInfo {
     tickets: number;
     /** Error from the last Jira poll, if it failed. */
     error: string | null;
+  };
+  /** Missing on older daemons. */
+  routines?: {
+    enabled: boolean;
+    dir: string;
+    /** Routine directories found, valid or not. */
+    total: number;
+    invalid: number;
+    /** The earliest next scheduled run. */
+    nextRunAt: number | null;
   };
 }
 
@@ -154,6 +167,9 @@ export interface RpcMethods {
   tickets: [Record<string, never>, TicketListEntry[]];
   dismissTicket: [{ key: string }, { removed: boolean }];
   pollTickets: [Record<string, never>, { tickets: string[] }];
+  /** Rescans the routines folder and lists every routine. */
+  routines: [Record<string, never>, RoutineListEntry[]];
+  runRoutine: [{ id: string }, RunOutcome];
   history: [{ pr: string }, EventRow[]];
   signal: [{ sessionId: string; signal: HookSignal; stopHookActive?: boolean }, SignalResult];
   humanComments: [{ pr: string }, HumanCommentRow[]];

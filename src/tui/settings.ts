@@ -1,4 +1,4 @@
-import { TICKET_MODES, type Config } from "../core/config.ts";
+import { ROUTINE_OVERLAP_MODES, ROUTINE_SESSION_MODES, TICKET_MODES, type Config } from "../core/config.ts";
 import { NOTIFY_EVENT_LABELS, NOTIFY_EVENTS, NOTIFY_METHODS } from "../notify/notifier.ts";
 
 export type FieldKind = "enum" | "int" | "number" | "string" | "list" | "template";
@@ -101,6 +101,17 @@ export const FIELDS: Field[] = [
     { ...f("jira.mergedStatus", "Status after PR merge (blank = never)", "string", (c) => c.jira.mergedStatus, (c, v) => (c.jira.mergedStatus = v)), allowEmpty: true },
     { ...f("jira.closedStatus", "Status after PR closed unmerged (blank = never)", "string", (c) => c.jira.closedStatus, (c, v) => (c.jira.closedStatus = v)), allowEmpty: true },
     f("jira.finalStatuses", "Final statuses (ticket is done)", "list", (c) => c.jira.finalStatuses, (c, v) => (c.jira.finalStatuses = v)),
+  ]),
+  ...under("Routines", "Scheduler", [
+    bool("routines.enabled", "Run routines", (c) => c.routines.enabled, (c, v) => (c.routines.enabled = v)),
+    f("routines.tickSec", "Check every (s)", "int", (c) => c.routines.tickSec, (c, v) => (c.routines.tickSec = v)),
+    f("routines.session", "Session per run", "enum", (c) => c.routines.session, (c, v) => (c.routines.session = v), [...ROUTINE_SESSION_MODES]),
+    f("routines.overlap", "Previous run still going", "enum", (c) => c.routines.overlap, (c, v) => (c.routines.overlap = v), [...ROUTINE_OVERLAP_MODES]),
+  ]),
+  ...under("Routines", "Agent", [
+    f("routines.model", "Default model", "string", (c) => c.routines.model, (c, v) => (c.routines.model = v)),
+    f("routines.effort", "Default effort", "string", (c) => c.routines.effort, (c, v) => (c.routines.effort = v)),
+    f("routines.promptTemplate", "Routine prompt", "template", (c) => c.routines.promptTemplate, (c, v) => (c.routines.promptTemplate = v)),
   ]),
 ];
 

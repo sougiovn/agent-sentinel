@@ -7,11 +7,23 @@ import { loadConfig, saveConfig, type Config } from "../core/config.ts";
 import type { Paths } from "../core/paths.ts";
 import type { EventRow, HumanCommentRow } from "../core/types.ts";
 import { copyToClipboard } from "./clipboard.ts";
-import type { MyPr, NewWatchDefaults, PrListEntry, RepoEntry, RepoView, RpcMethod, RpcMethods, StatusInfo, TicketListEntry, WorktreeEntry } from "../daemon/protocol.ts";
+import type {
+  MyPr,
+  NewWatchDefaults,
+  PrListEntry,
+  RepoEntry,
+  RepoView,
+  RoutineListEntry,
+  RpcMethod,
+  RpcMethods,
+  StatusInfo,
+  TicketListEntry,
+  WorktreeEntry,
+} from "../daemon/protocol.ts";
 import { Client } from "../cli/client.ts";
 import { startDaemon as startDaemonProcess } from "../cli/daemon-control.ts";
 import { openUrl as defaultOpenUrl } from "../cli/open-url.ts";
-import { ago, draftState, humanCommentLocation, mergeLabel, prGroup, prLine, sortByGroup, type DraftState } from "../cli/format.ts";
+import { ago, draftState, humanCommentLocation, mergeLabel, prGroup, prLine, routineStatus, sortByGroup, when, type DraftState } from "../cli/format.ts";
 import {
   buildSessionGroups,
   eventSummary,
@@ -34,7 +46,7 @@ import { filterHints, fitHints, HELP_HINT, hintText, type Hint } from "./shortcu
 import { cycleEnum, displayValue, editText, FIELDS, filterFields, fullLabel, parseValue, SECTIONS, settingsRows, type Field, type SettingsRow } from "./settings.ts";
 import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type DirWatcher, type Theme } from "./theme.ts";
 
-type View = "list" | "history" | "settings" | "pick-pr" | "new-watch" | "repos";
+type View = "list" | "history" | "settings" | "pick-pr" | "new-watch" | "repos" | "routines";
 
 /** The daemon RPC surface the TUI uses; tests pass one backed by an in-process daemon. */
 export interface RpcClient {
@@ -108,7 +120,13 @@ export function App(props: AppProps) {
   const [confirmDismiss, setConfirmDismiss] = createSignal(false);
   /** Key of the selected line in the sessions view; kept across refreshes. */
   const [lineKey, setLineKey] = createSignal<string | null>(null);
-  const shownGroups = () => filterSessionGroups(buildSessionGroups(prs(), tickets()), listQuery());
+  const [routines, setRoutines] = createSignal<RoutineListEntry[]>([]);
+  /** Index into `routines()` in the routines view. */
+  const [routineSel, setRoutineSel] = createSignal(0);
+  const selectedRoutine = () => routines()[routineSel()];
+  const shownGroups = () => filterSessionGroups(buildSessionGroups(prs(), tickets(), routines()), listQuery());
+  /** Something is shown in the sessions view. */
+  const hasSessions = () => prs().length > 0 || tickets().length > 0 || routines().some((r) => r.session);
   const lines = () => sessionLines(shownGroups());
   const lineIndex = () => Math.max(0, lines().findIndex((l) => l.key === lineKey()));
   const currentLine = (): SessionLine | undefined => lines()[lineIndex()];
@@ -119,6 +137,10 @@ export function App(props: AppProps) {
   const currentTicket = () => {
     const l = currentLine();
     return l?.kind === "ticket" ? l.ticket : undefined;
+  };
+  const currentRoutine = () => {
+    const l = currentLine();
+    return l?.kind === "routine" ? l.routine : undefined;
   };
   /** The session whose own line is selected in the sessions view. */
   const selectedSession = () => {
@@ -262,6 +284,24 @@ export function App(props: AppProps) {
     await refresh();
   };
 
+  /** Starts a routine run now, outside its schedule. */
+  const runRoutine = async (r: RoutineListEntry | undefined) => {
+    if (!r) return;
+    if (!r.valid) {
+      notify(`${r.id} is invalid: ${r.error}`, true);
+      return;
+    }
+    notify(`Starting routine ${r.id}…`);
+    try {
+      const out = await client.call("runRoutine", { id: r.id }, 120_000);
+      notify(out.result === "delivered" ? `Started routine ${r.id}` : `${r.id}: ${out.message}`, out.result !== "delivered");
+    } catch (e) {
+      const msg = (e as Error).message;
+      notify(msg.startsWith("Unknown method") ? "The running daemon is older than this dashboard. Run `sentinel restart`." : `Could not run ${r.id}: ${msg}`, true);
+    }
+    await refresh();
+  };
+
   const refresh = async () => {
     try {
       const [st, list] = await Promise.all([client.call("status", {}, 3000), client.call("list", {}, 3000)]);
@@ -272,6 +312,10 @@ export function App(props: AppProps) {
       // An older daemon has no ticket support; treat that as no tickets.
       const ts = await client.call("tickets", {}, 3000).catch(() => [] as TicketListEntry[]);
       setTickets(ts);
+      // Likewise for routines.
+      const rs = await client.call("routines", {}, 3000).catch(() => [] as RoutineListEntry[]);
+      setRoutines(rs);
+      setRoutineSel((i) => Math.max(0, Math.min(i, rs.length - 1)));
       if (view() === "history" && detailsId) await loadDetails(detailsId).catch(() => {});
       if (detailsPrKey()) await loadSessionEvents(detailsPrKey().split(" "));
     } catch {
@@ -438,6 +482,14 @@ export function App(props: AppProps) {
     } catch (e) {
       notify((e as Error).message, true);
     }
+  };
+
+  /** Opens a file in $EDITOR, with the dashboard suspended until the editor exits. */
+  const editExternally = async (file: string) => {
+    const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+    await renderer.suspend();
+    spawnSync("sh", ["-c", `${editor} "$1"`, "sh", file], { stdio: "inherit" });
+    await renderer.resume();
   };
 
   /** Opens the selected template field in $EDITOR. */
@@ -789,6 +841,30 @@ export function App(props: AppProps) {
           }
         }
       }
+      if (currentRoutine() && !confirmDelete()) {
+        const r = currentRoutine()!;
+        switch (key.name) {
+          case "o":
+          case "c":
+          case "d":
+            notify("Routines are managed in their folder; t opens the routines view", true);
+            return;
+          case "x":
+            await runRoutine(r);
+            return;
+          case "a":
+            if (key.shift) await goToAgent(r.row?.session_id ?? undefined, `routine ${r.id}`);
+            return;
+          case "p": {
+            if (!r.session) return;
+            const paused = !r.session.paused;
+            await client.call("pause", { sessionId: r.session.session_id, paused }).catch((e: Error) => notify(e.message, true));
+            notify(`${paused ? "Paused" : "Resumed"} session ${r.session.session_id.slice(0, 8)}`);
+            await refresh();
+            return;
+          }
+        }
+      }
       if (confirmDelete()) {
         setConfirmDelete(false);
         if (key.name === "y" && current()) {
@@ -825,6 +901,14 @@ export function App(props: AppProps) {
           return;
         case "g":
           await openRepos();
+          return;
+        case "t":
+          if (!online()) {
+            notify("Start the daemon first (S)", true);
+            return;
+          }
+          setView("routines");
+          await refresh();
           return;
         case "o": {
           const pr = current();
@@ -918,6 +1002,43 @@ export function App(props: AppProps) {
           } catch (e) {
             notify(`Could not open ${url}: ${(e as Error).message}`, true);
           }
+          return;
+        }
+      }
+      return;
+    }
+    if (v === "routines") {
+      const r = selectedRoutine();
+      switch (key.name) {
+        case "escape":
+        case "q":
+        case "backspace":
+          setView("list");
+          return;
+        case "up":
+        case "k":
+          setRoutineSel((i) => Math.max(0, i - 1));
+          return;
+        case "down":
+        case "j":
+          setRoutineSel((i) => Math.min(routines().length - 1, i + 1));
+          return;
+        case "x":
+        case "return":
+          await runRoutine(r);
+          return;
+        case "r":
+          await refresh();
+          notify("Rescanned the routines folder");
+          return;
+        case "a":
+          if (key.shift && r) await goToAgent(r.row?.session_id ?? undefined, `routine ${r.id}`);
+          return;
+        case "e": {
+          if (!r) return;
+          const file = join(r.dir, "ROUTINE.md");
+          await editExternally(file);
+          await refresh();
           return;
         }
       }
@@ -1095,6 +1216,18 @@ export function App(props: AppProps) {
         </>
       );
     }
+    if (l.kind === "routine") {
+      const r = l.routine;
+      const st = routineStatus(r);
+      return (
+        <>
+          <text>{`${pad(`      ⏱ ${r.id} - ${r.name}`, nameWidth())} ${pad(ago(r.row?.last_run_at ?? null), widths().checked)}`}</text>
+          <text fg={theme().textMuted}>{` ${pad("-", widths().human)} ${pad("-", widths().merge)}`}</text>
+          <text fg={statusColor(theme(), st)}>{` ${pad(st, widths().status)}`}</text>
+          {reason(r.error ?? r.row?.last_reason ?? null)}
+        </>
+      );
+    }
     const t = l.ticket;
     return (
       <>
@@ -1141,12 +1274,16 @@ export function App(props: AppProps) {
       <Show when={status()?.jira?.error}>
         <text fg={theme().error} flexShrink={0}>Jira poll failed: {status()!.jira.error}</text>
       </Show>
-      <Show when={(prs().length > 0 || tickets().length > 0) && lines().length === 0}>
+      <Show when={hasSessions() && lines().length === 0}>
         <text fg={theme().textMuted}>No sessions match "{listQuery()}".</text>
       </Show>
       <Show
-        when={prs().length > 0 || tickets().length > 0}
-        fallback={<text fg={theme().textMuted}>No sessions yet. Press n to watch one of your PRs, hand off from an agent with `sentinel watch &lt;pr&gt;`, or label a Jira ticket.</text>}
+        when={hasSessions()}
+        fallback={
+          <text fg={theme().textMuted}>
+            No sessions yet. Press n to watch one of your PRs, hand off from an agent with `sentinel watch &lt;pr&gt;`, label a Jira ticket, or add a routine (t).
+          </text>
+        }
       >
         <scrollbox ref={(el: ScrollBoxRenderable) => (sessionScroll = el)} flexGrow={1} flexShrink={1} minHeight={0}>
           <For each={lines()}>
@@ -1269,6 +1406,10 @@ export function App(props: AppProps) {
       </box>
     );
   };
+
+  /** The routines view's first column: wide enough for the longest `id - name`, within reason. */
+  const routineNameWidth = () =>
+    Math.min(Math.max(24, Math.floor(dims().width * 0.3)), Math.max(20, ...routines().map((r) => (r.valid ? `${r.id} - ${r.name}` : r.id).length)));
 
   /** The watch dialogs float over the sessions list. */
   const modalWidth = () => Math.max(40, Math.min(100, dims().width - 12));
@@ -1486,6 +1627,18 @@ export function App(props: AppProps) {
           hints: [hint("↑↓", "move"), ...filter, hint("o", "open PR or ticket"), hint("r", "rescan"), hint(repoQuery() ? "q" : "esc", "back")],
         };
       }
+      case "routines":
+        return {
+          title: "Routines",
+          hints: [
+            hint("↑↓", "move"),
+            hint("x/enter", "run now"),
+            hint("A", "go to last run's agent"),
+            hint("e", "edit ROUTINE.md"),
+            hint("r", "rescan"),
+            hint("esc", "back"),
+          ],
+        };
       case "settings":
         if (settingsFiltering())
           return {
@@ -1537,7 +1690,9 @@ export function App(props: AppProps) {
             ? [hint("o", "open PR"), hint("c", "check now"), hint("d", "unwatch")]
             : l?.kind === "ticket"
               ? [hint("o", "open ticket"), hint("d", "dismiss")]
-              : [];
+              : l?.kind === "routine"
+                ? [hint("x", "run routine now")]
+                : [];
         return {
           title: "Sessions",
           hints: [
@@ -1549,6 +1704,7 @@ export function App(props: AppProps) {
             ...filterHints,
             hint("n", "watch a PR"),
             hint("g", "repos"),
+            hint("t", "routines"),
             hint("r", "refresh all"),
             hint("s", "settings"),
             hint("R", "reload config"),
@@ -1632,6 +1788,17 @@ export function App(props: AppProps) {
               </text>
             </box>
           </Show>
+          <Show when={currentRoutine() && !detailsOpen()}>
+            <box border title=" Details " paddingLeft={1} flexDirection="column" flexShrink={0}>
+              <text>
+                routine {currentRoutine()!.id} · {currentRoutine()!.schedule} · next {when(currentRoutine()!.nextRunAt)} · session {currentRoutine()!.row?.session_id ?? "none"}
+              </text>
+              <text fg={theme().textMuted}>
+                cwd {tilde(currentRoutine()!.session?.cwd ?? currentRoutine()!.cwd ?? "?")} · pane {currentRoutine()!.session?.pane_id ?? "none"} ·{" "}
+                {sessionState(currentRoutine()!.session)}
+              </text>
+            </box>
+          </Show>
           <Show when={currentTicket() && !detailsOpen()}>
             <box border title=" Details " paddingLeft={1} flexDirection="column" flexShrink={0}>
               <text>
@@ -1654,6 +1821,71 @@ export function App(props: AppProps) {
                 {current()!.session?.state ?? "?"}
                 {current()!.session?.paused ? " (paused)" : ""}
               </text>
+            </box>
+          </Show>
+        </Match>
+
+        <Match when={view() === "routines"}>
+          <box
+            flexDirection="column"
+            border
+            title={` Routines · ${routines().length} · ${tilde(status()?.routines?.dir ?? props.paths.routinesDir)}${status()?.routines && !status()!.routines!.enabled ? " · switched off in settings" : ""} `}
+            marginTop={1}
+            flexGrow={1}
+            paddingLeft={1}
+            paddingRight={1}
+          >
+            <text fg={theme().textMuted} flexShrink={0}>
+              {pad("ROUTINE", routineNameWidth())} {pad("SCHEDULE", 16)} {pad("NEXT", 16)} {pad("LAST RUN", 16)} {pad("STATUS", 13)} REASON
+            </text>
+            <Show when={routines().length === 0}>
+              <text fg={theme().textMuted}>
+                No routines yet. Create {tilde(props.paths.routinesDir)}/&lt;id&gt;/ROUTINE.md with name, description and schedule (cron) frontmatter, then
+                write the instructions below it. The id is the directory name, lower kebab-case.
+              </text>
+            </Show>
+            <scrollbox flexGrow={1} flexShrink={1} minHeight={0}>
+              <For each={routines()}>
+                {(r, i) => (
+                  <box flexDirection="row" flexShrink={0} backgroundColor={i() === routineSel() ? theme().selectionBackground : undefined}>
+                    <text fg={r.valid ? undefined : theme().error} flexShrink={0}>{pad(r.valid ? `${r.id} - ${r.name}` : r.id, routineNameWidth())} </text>
+                    <text fg={theme().textSecondary} flexShrink={0}>{pad(r.schedule || "-", 16)} </text>
+                    <text fg={theme().info} flexShrink={0}>{pad(when(r.nextRunAt), 16)} </text>
+                    <text fg={theme().textMuted} flexShrink={0}>{pad(when(r.row?.last_run_at), 16)} </text>
+                    <text fg={statusColor(theme(), routineStatus(r))} flexShrink={0}>{pad(routineStatus(r), 13)} </text>
+                    <text fg={r.valid ? theme().textSecondary : theme().error}>
+                      {pad((r.error ?? r.row?.last_reason ?? "").replace(/\s+/g, " "), Math.max(10, dims().width - routineNameWidth() - 72))}
+                    </text>
+                  </box>
+                )}
+              </For>
+            </scrollbox>
+          </box>
+          <Show when={selectedRoutine()}>
+            <box border title={` ${selectedRoutine()!.id} `} paddingLeft={1} flexDirection="column" flexShrink={0}>
+              <Show when={selectedRoutine()!.valid} fallback={<text fg={theme().error}>{selectedRoutine()!.error}</text>}>
+                <text>
+                  {selectedRoutine()!.name}
+                  {selectedRoutine()!.description ? ` · ${selectedRoutine()!.description}` : ""}
+                </text>
+                <text fg={theme().textMuted}>
+                  cwd {tilde(selectedRoutine()!.cwd ?? "?")} · model {selectedRoutine()!.model ?? `${config()?.routines.model ?? "default"} (default)`} · effort{" "}
+                  {selectedRoutine()!.effort ?? `${config()?.routines.effort ?? "default"} (default)`}
+                  {selectedRoutine()!.enabled ? "" : " · disabled"}
+                </text>
+              </Show>
+              <text fg={theme().textMuted}>{tilde(selectedRoutine()!.dir)}</text>
+              <For each={selectedRoutine()!.runs}>
+                {(run) => (
+                  <box flexDirection="row" flexShrink={0}>
+                    <text fg={theme().info}>{pad(when(run.started_at), 16)} </text>
+                    <text fg={theme().textMuted}>{pad(run.manual ? "manual" : `for ${when(run.slot).slice(-5)}`, 10)} </text>
+                    <text fg={statusColor(theme(), run.status)}>{pad(run.status, 13)} </text>
+                    <text fg={theme().textMuted}>{pad((run.session_id ?? "").slice(0, 8), 9)}</text>
+                    <text fg={theme().textSecondary}>{(run.reason ?? "").replace(/\s+/g, " ")}</text>
+                  </box>
+                )}
+              </For>
             </box>
           </Show>
         </Match>

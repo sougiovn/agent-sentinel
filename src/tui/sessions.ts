@@ -1,11 +1,12 @@
 import { prGroup, prLine } from "../cli/format.ts";
 import type { EventRow, SessionRow } from "../core/types.ts";
-import type { PrListEntry, TicketListEntry } from "../daemon/protocol.ts";
+import type { PrListEntry, RoutineListEntry, TicketListEntry } from "../daemon/protocol.ts";
 
 export const MULTI_REPO_GROUP = "Multiple repositories";
 export const NO_PR_GROUP = "No PR yet";
+export const ROUTINES_GROUP = "Routines";
 
-/** An agent session with the PRs and tickets it works on. */
+/** An agent session with the PRs, tickets and routines it works on. */
 export interface SessionEntry {
   sessionId: string;
   /** Null when the daemon has no row for the session yet. */
@@ -13,10 +14,12 @@ export interface SessionEntry {
   agent: string;
   prs: PrListEntry[];
   tickets: TicketListEntry[];
+  /** Routines whose latest run is this session. */
+  routines: RoutineListEntry[];
 }
 
 export interface SessionGroup {
-  /** `owner/repo`, {@link MULTI_REPO_GROUP} or {@link NO_PR_GROUP}. */
+  /** `owner/repo`, {@link MULTI_REPO_GROUP}, {@link NO_PR_GROUP} or {@link ROUTINES_GROUP}. */
   title: string;
   sessions: SessionEntry[];
 }
@@ -25,18 +28,26 @@ export interface SessionGroup {
 export type SessionLine =
   | { kind: "session"; key: string; entry: SessionEntry; group: SessionGroup }
   | { kind: "pr"; key: string; pr: PrListEntry; entry: SessionEntry; group: SessionGroup }
-  | { kind: "ticket"; key: string; ticket: TicketListEntry; entry: SessionEntry; group: SessionGroup };
+  | { kind: "ticket"; key: string; ticket: TicketListEntry; entry: SessionEntry; group: SessionGroup }
+  | { kind: "routine"; key: string; routine: RoutineListEntry; entry: SessionEntry; group: SessionGroup };
 
-/** The repo a session belongs under: its PRs' repo, or a special group when they span repos or there are none. */
+/**
+ * The repo a session belongs under: its PRs' repo, or a special group when they span repos, when it only
+ * runs routines, or when it has no PR yet.
+ */
 export function sessionGroup(entry: SessionEntry): string {
   const repos = new Set(entry.prs.map((p) => prGroup(p.id)));
-  if (repos.size === 0) return NO_PR_GROUP;
+  if (repos.size === 0) return entry.routines.length && !entry.tickets.length ? ROUTINES_GROUP : NO_PR_GROUP;
   return repos.size === 1 ? [...repos][0]! : MULTI_REPO_GROUP;
 }
 
-/** When the session first showed up: its oldest PR or ticket. */
+/** When the session first showed up: its oldest PR, ticket or routine run. */
 function since(e: SessionEntry): number {
-  return Math.min(...e.prs.map((p) => p.registered_at), ...e.tickets.map((t) => t.picked_at));
+  return Math.min(
+    ...e.prs.map((p) => p.registered_at),
+    ...e.tickets.map((t) => t.picked_at),
+    ...e.routines.map((r) => r.row?.last_run_at ?? Infinity),
+  );
 }
 
 /**
@@ -44,16 +55,19 @@ function since(e: SessionEntry): number {
  * Repos come first (alphabetical), then multi-repo sessions, then sessions with no PR yet.
  * Inside a group, sessions are ordered oldest first.
  */
-export function buildSessionGroups(prs: PrListEntry[], tickets: TicketListEntry[]): SessionGroup[] {
+export function buildSessionGroups(prs: PrListEntry[], tickets: TicketListEntry[], routines: RoutineListEntry[] = []): SessionGroup[] {
   const byId = new Map<string, SessionEntry>();
   const entry = (id: string, session: SessionRow | null, agent: string) => {
     let e = byId.get(id);
-    if (!e) byId.set(id, (e = { sessionId: id, session, agent, prs: [], tickets: [] }));
+    if (!e) byId.set(id, (e = { sessionId: id, session, agent, prs: [], tickets: [], routines: [] }));
     e.session ??= session;
     return e;
   };
   for (const p of prs) entry(p.session_id, p.session, p.agent).prs.push(p);
   for (const t of tickets) entry(t.session_id, t.session, t.session?.agent ?? "claude").tickets.push(t);
+  for (const r of routines) {
+    if (r.row?.session_id && r.session) entry(r.row.session_id, r.session, r.session.agent).routines.push(r);
+  }
 
   const groups = new Map<string, SessionGroup>();
   for (const e of byId.values()) {
@@ -61,7 +75,7 @@ export function buildSessionGroups(prs: PrListEntry[], tickets: TicketListEntry[
     if (!groups.has(title)) groups.set(title, { title, sessions: [] });
     groups.get(title)!.sessions.push(e);
   }
-  const rank = (t: string) => (t === NO_PR_GROUP ? 2 : t === MULTI_REPO_GROUP ? 1 : 0);
+  const rank = (t: string) => (t === ROUTINES_GROUP ? 3 : t === NO_PR_GROUP ? 2 : t === MULTI_REPO_GROUP ? 1 : 0);
   const sorted = [...groups.values()].sort((a, b) => rank(a.title) - rank(b.title) || a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
   for (const g of sorted) g.sessions.sort((a, b) => since(a) - since(b) || a.sessionId.localeCompare(b.sessionId));
   return sorted;
@@ -75,6 +89,7 @@ function haystack(g: SessionGroup, e: SessionEntry): string {
     e.agent,
     ...e.prs.map((p) => `${prGroup(p.id)} ${prLine(p)} ${p.last_status}`),
     ...e.tickets.map((t) => `${t.key} ${t.summary ?? ""} ${t.last_status}`),
+    ...e.routines.map((r) => `${r.id} ${r.name} ${r.row?.last_status ?? ""}`),
   ]
     .join(" ")
     .toLowerCase();
@@ -96,6 +111,7 @@ export function sessionLines(groups: SessionGroup[]): SessionLine[] {
       { kind: "session", key: `s:${entry.sessionId}`, entry, group },
       ...entry.prs.map((pr): SessionLine => ({ kind: "pr", key: `p:${pr.id}`, pr, entry, group })),
       ...entry.tickets.map((ticket): SessionLine => ({ kind: "ticket", key: `t:${ticket.key}`, ticket, entry, group })),
+      ...entry.routines.map((routine): SessionLine => ({ kind: "routine", key: `r:${routine.id}`, routine, entry, group })),
     ]),
   );
 }
@@ -111,7 +127,13 @@ export function sessionState(s: SessionRow | null): string {
 /** `2 PRs · 1 ticket` */
 export function sessionSummary(e: SessionEntry): string {
   const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
-  return [e.prs.length ? n(e.prs.length, "PR") : "", e.tickets.length ? n(e.tickets.length, "ticket") : ""].filter(Boolean).join(" · ");
+  return [
+    e.prs.length ? n(e.prs.length, "PR") : "",
+    e.tickets.length ? n(e.tickets.length, "ticket") : "",
+    e.routines.length ? n(e.routines.length, "routine") : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** `$0.0123` under a dollar, since a single evaluator run costs cents; `$1.23` from a dollar up. */

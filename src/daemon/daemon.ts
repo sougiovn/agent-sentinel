@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, defaultConfig, watchConfig, type Config } from "../core/config.ts";
@@ -18,6 +18,7 @@ import { sq } from "../spawn/launcher.ts";
 import type { OpenTool, RefreshResult, RepoView, RpcMethod, RpcMethods, RpcRequest, RpcResponse, StatusInfo } from "./protocol.ts";
 import { Sentinel } from "./sentinel.ts";
 import { TicketWatcher } from "./tickets.ts";
+import { RoutineWatcher } from "./routines.ts";
 import { AcliJira, type JiraClient } from "../jira/acli.ts";
 import { MacNotifier, type Notification, type SendNotification } from "../notify/notifier.ts";
 
@@ -48,6 +49,9 @@ export class Daemon {
   readonly sentinel: Sentinel;
   readonly dispatcher: Dispatcher;
   readonly tickets: TicketWatcher;
+  readonly routines: RoutineWatcher;
+  private routineTimer?: ReturnType<typeof setTimeout>;
+  private routineFolderWatcher?: { close(): void };
   private readonly gh: GhClient;
   private readonly repos: RepoLocator;
   private readonly run: Exec;
@@ -126,6 +130,37 @@ export class Daemon {
       log,
       notify,
     });
+    this.routines = new RoutineWatcher({
+      store: this.store,
+      dispatcher: this.dispatcher,
+      config: () => this.config,
+      routinesDir: paths.routinesDir,
+      now,
+      log,
+      notify,
+    });
+    this.routines.scan();
+  }
+
+  /** Schedules the next routine check; null stops checking. */
+  private scheduleRoutines(delayMs: number | null) {
+    clearTimeout(this.routineTimer);
+    this.routineTimer = undefined;
+    if (this.o.noTimer || this.stopping || delayMs === null) return;
+    this.routineTimer = setTimeout(() => void this.runRoutineTick(), delayMs);
+  }
+
+  /** Starts every routine run that is due; the timer for the next check starts once it finishes. */
+  async runRoutineTick(): Promise<string[]> {
+    try {
+      return await this.routines.tick();
+    } catch (e) {
+      this.log(`routine check failed: ${(e as Error).message}`);
+      return [];
+    } finally {
+      const cfg = this.config.routines;
+      this.scheduleRoutines(cfg.enabled ? cfg.tickSec * 1000 : null);
+    }
   }
 
   /** Sends a notification in the background when it and its event are switched on. Failures are only logged. */
@@ -163,9 +198,12 @@ export class Daemon {
     const intervalChanged = r.config.pollIntervalSec !== this.config.pollIntervalSec;
     const jiraChanged =
       r.config.jira.enabled !== this.config.jira.enabled || r.config.jira.pollIntervalSec !== this.config.jira.pollIntervalSec;
+    const routinesChanged =
+      r.config.routines.enabled !== this.config.routines.enabled || r.config.routines.tickSec !== this.config.routines.tickSec;
     this.config = r.config;
     this.configError = null;
     this.log("config reloaded");
+    if (routinesChanged && this.server) this.scheduleRoutines(this.config.routines.enabled ? 1000 : null);
     if (intervalChanged && this.timer) this.schedule(this.config.pollIntervalSec * 1000);
     if (jiraChanged && this.server) this.scheduleTickets(this.config.jira.enabled ? 5000 : null);
     return { ok: true, error: null };
@@ -312,6 +350,16 @@ export class Daemon {
         tickets: this.store.listTickets().length,
         error: this.ticketError,
       },
+      routines: (() => {
+        const list = this.routines.list();
+        return {
+          enabled: this.config.routines.enabled,
+          dir: this.paths.routinesDir,
+          total: list.length,
+          invalid: list.filter((r) => !r.valid).length,
+          nextRunAt: this.routines.nextRunAt(),
+        };
+      })(),
     };
   }
 
@@ -388,6 +436,11 @@ export class Daemon {
         if (this.ticketError) throw new Error(this.ticketError);
         return { tickets: this.store.listTickets().map((t) => t.key) } as R;
       }
+      case "routines":
+        this.routines.scan();
+        return this.routines.list() as R;
+      case "runRoutine":
+        return (await this.routines.runNow((p as RpcMethods["runRoutine"][0]).id)) as R;
       case "refresh":
         return (await this.refresh()) as R;
       case "history": {
@@ -536,7 +589,33 @@ export class Daemon {
     });
     this.schedule(3000);
     if (this.config.jira.enabled) this.scheduleTickets(5000);
+    if (this.config.routines.enabled) this.scheduleRoutines(2000);
+    this.routineFolderWatcher = this.watchRoutinesFolder();
     this.log(`daemon started (pid ${process.pid}, home ${this.paths.home})`);
+  }
+
+  private routineScanTimer?: ReturnType<typeof setTimeout>;
+
+  /**
+   * Rescans the routines folder shortly after anything in it changes, so a broken ROUTINE.md is reported
+   * right away. Runs still start only from the scheduler's tick.
+   */
+  private watchRoutinesFolder(): { close(): void } | undefined {
+    try {
+      return watch(this.paths.routinesDir, { recursive: true }, () => {
+        clearTimeout(this.routineScanTimer);
+        this.routineScanTimer = setTimeout(() => {
+          try {
+            this.routines.scan();
+          } catch (e) {
+            this.log(`routine rescan failed: ${(e as Error).message}`);
+          }
+        }, 500);
+      });
+    } catch (e) {
+      this.log(`can't watch ${this.paths.routinesDir}: ${(e as Error).message}`);
+      return undefined;
+    }
   }
 
   stop() {
@@ -544,7 +623,10 @@ export class Daemon {
     this.stopping = true;
     clearTimeout(this.timer);
     clearTimeout(this.ticketTimer);
+    clearTimeout(this.routineTimer);
+    clearTimeout(this.routineScanTimer);
     this.watcher?.close();
+    this.routineFolderWatcher?.close();
     this.server?.stop(true);
     try {
       unlinkSync(this.paths.socket);

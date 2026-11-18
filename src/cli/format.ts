@@ -1,6 +1,6 @@
 import { fromPrId } from "../core/pr-ref.ts";
 import { isOpenHumanComment, type HumanCommentRow } from "../core/types.ts";
-import type { PrListEntry, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
+import type { PrListEntry, RoutineListEntry, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
 
 /** `[org/repo/123]`; the host is shown only for GitHub Enterprise PRs. */
 export function prTag(id: string): string {
@@ -53,6 +53,11 @@ export function formatStatus(st: StatusInfo): string {
     lines.push(`jira: label "${st.jira.label}" · poll every ${st.jira.pollIntervalSec}s · ${st.jira.tickets} ticket(s) picked up${next}`);
     if (st.jira.error) lines.push(`jira error: ${st.jira.error}`);
   } else if (st.jira) lines.push("jira: off");
+  if (st.routines?.enabled) {
+    const next = st.routines.nextRunAt ? ` · next run ${new Date(st.routines.nextRunAt).toLocaleString()}` : "";
+    const bad = st.routines.invalid ? ` (${st.routines.invalid} invalid)` : "";
+    lines.push(`routines: ${st.routines.total} in ${st.routines.dir}${bad}${next}`);
+  } else if (st.routines) lines.push("routines: off");
   if (st.configError) lines.push(`config error (using last good config): ${st.configError}`);
   return lines.join("\n");
 }
@@ -117,6 +122,35 @@ export function formatHumanComments(list: HumanCommentRow[]): string {
       return lines.join("\n");
     })
     .join("\n\n");
+}
+
+/** Local `Mon 18 Nov 08:00`; null as "-". */
+export function when(ts: number | null | undefined): string {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" }).replace(",", "");
+  return `${day} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** What a routine's STATUS column shows. */
+export function routineStatus(r: RoutineListEntry): string {
+  if (!r.valid) return "invalid";
+  if (!r.enabled) return "disabled";
+  return r.row?.last_status ?? "waiting";
+}
+
+export function formatRoutines(list: RoutineListEntry[], dir?: string): string {
+  if (list.length === 0) return `No routines. Add a directory with a ROUTINE.md to ${dir ?? "the routines folder"}.`;
+  const rows = list.map((r) => [
+    r.id,
+    r.name.slice(0, 40),
+    r.schedule,
+    when(r.nextRunAt),
+    when(r.row?.last_run_at),
+    routineStatus(r),
+    (r.error ?? r.row?.last_reason ?? "").replace(/\s+/g, " ").slice(0, 70),
+  ]);
+  return table(["ROUTINE", "NAME", "SCHEDULE", "NEXT", "LAST RUN", "STATUS", "REASON"], rows);
 }
 
 export function formatTickets(list: TicketListEntry[]): string {

@@ -27,6 +27,14 @@ export const DEFAULT_STATUS_COLORS: Record<string, string> = {
   in_review: "#2ecc71",
   done: "#27ae60",
   transition_failed: "#e67e22",
+  waiting: "#7f8c8d",
+  starting: "#3498db",
+  finished: "#27ae60",
+  skipped: "#e67e22",
+  missed: "#e67e22",
+  start_failed: "#e74c3c",
+  invalid: "#e74c3c",
+  disabled: "#7f8c8d",
 };
 
 /**

@@ -26,6 +26,7 @@ sentinel start               # start the daemon in the background, no dashboard
 sentinel watch <pr>...       # from inside an agent session: hand off PRs
 sentinel list | status | check [<pr>] | unwatch <pr> | reload | stop | restart
 sentinel tickets [check | dismiss <key>]   # Jira tickets Sentinel picked up
+sentinel routines [run <id> | check]       # scheduled routines
 sentinel comments <pr>       # human comments on a PR and the agent's drafts
 sentinel draft <pr> <item> --summary … --change … --reply …   # from inside an agent session
 ```
@@ -40,6 +41,22 @@ Set `jira.enabled` (in `config.json`, or Tickets › Jira › Pick up tickets in
 - `plan`: write a plan and wait.
 
 `jira.promptTemplate` is the instruction text it starts with. `sentinel tickets` lists the picked-up tickets.
+
+### Routines
+
+Scheduled tasks, run in a new Claude session while the daemon is up. Each routine is a directory, `~/.config/sentinel/routines/<id>/` (the id is the directory name, lower kebab-case), with a `ROUTINE.md` and any scripts or files it uses:
+
+```md
+---
+name: Morning digest
+description: PRs waiting on me
+schedule: "0 8 * * 1-5"   # cron, local time
+model: sonnet             # optional; also effort, cwd, enabled
+---
+List the PRs where my review is requested and summarise each one.
+```
+
+A time missed while the computer was off still runs later that day, once; times from earlier days are skipped. `sentinel routines` lists them, `sentinel routines run <id>` (or `t`, then `x`, in the dashboard) runs one now, and settings has a Routines tab. See [Routines](docs/features.md#routines).
 
 `watch` detects the agent from `$CLAUDE_CODE_SESSION_ID` or `$CODEX_THREAD_ID`, and uses the current directory as the place to resume in. Override with `--agent`, `--session` and `--cwd`. Activity that already exists when a PR is registered counts as seen; pass `--include-existing` to evaluate it.
 

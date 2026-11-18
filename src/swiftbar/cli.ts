@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { Client, DaemonUnavailableError } from "../cli/client.ts";
 import { startDaemon } from "../cli/daemon-control.ts";
 import { selfCommand, type Paths } from "../core/paths.ts";
-import type { OpenTool, PrListEntry, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
+import type { OpenTool, PrListEntry, RoutineListEntry, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
 import { loadTheme } from "../tui/theme.ts";
 import { renderMenu } from "./menu.ts";
 import { cliNotifier } from "../notify/cli.ts";
@@ -12,13 +12,16 @@ export const SWIFTBAR_USAGE = `usage: sentinel swiftbar install <path> [--force]
   <path> is a directory (writes sentinel.30s.sh there) or a .sh file.`;
 
 /** Fetches what the menu shows; a null status means the daemon isn't answering. */
-async function menuData(client: Client): Promise<{ status: StatusInfo | null; prs: PrListEntry[]; tickets: TicketListEntry[] }> {
+async function menuData(
+  client: Client,
+): Promise<{ status: StatusInfo | null; prs: PrListEntry[]; tickets: TicketListEntry[]; routines: RoutineListEntry[] }> {
   try {
     const [status, prs] = await Promise.all([client.call("status", {}, 5000), client.call("list", {}, 5000)]);
     const tickets = await client.call("tickets", {}, 5000).catch(() => [] as TicketListEntry[]);
-    return { status, prs, tickets };
+    const routines = await client.call("routines", {}, 5000).catch(() => [] as RoutineListEntry[]);
+    return { status, prs, tickets, routines };
   } catch (e) {
-    if (e instanceof DaemonUnavailableError || (e as Error).name === "TimeoutError") return { status: null, prs: [], tickets: [] };
+    if (e instanceof DaemonUnavailableError || (e as Error).name === "TimeoutError") return { status: null, prs: [], tickets: [], routines: [] };
     throw e;
   }
 }

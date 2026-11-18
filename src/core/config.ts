@@ -43,11 +43,28 @@ What to do:
 Rules:
 - Never reply to, react to, or resolve comments written by humans.`;
 
+export const DEFAULT_ROUTINE_TEMPLATE = `Sentinel started this session to run the routine "{{name}}" ({{id}}), scheduled \`{{schedule}}\`. This is the run for {{slot}}.
+{{description}}
+
+The routine's directory is {{dir}}. It holds ROUTINE.md and any scripts or files the routine uses; use them as its instructions say.
+You are in {{cwd}}.
+
+Instructions:
+{{instructions}}
+
+Rules:
+- Never reply to, react to, or resolve comments written by humans.`;
+
 /** "default" in model/effort settings means the flag is omitted and the agent decides. */
 export const AGENT_DEFAULT = "default";
 
 export const TICKET_MODES = ["pr-watch", "pr", "plan"] as const;
 export type TicketMode = (typeof TICKET_MODES)[number];
+
+/** new: every run gets a new session. reuse: every run resumes the routine's one session. */
+export const ROUTINE_SESSION_MODES = ["new", "reuse"] as const;
+/** What happens to a scheduled run while the routine's previous run is still busy. */
+export const ROUTINE_OVERLAP_MODES = ["skip", "queue"] as const;
 
 export const ConfigSchema = z.object({
   multiplexer: z.enum(["rex", "herdr"]).default("rex"),
@@ -128,6 +145,22 @@ export const ConfigSchema = z.object({
       /** Jira statuses that end a ticket (case-insensitive). A tracked ticket found in one is marked done. */
       finalStatuses: z.array(z.string().min(1)).default(["Done", "CANCELED"]),
       promptTemplate: z.string().min(1).default(DEFAULT_TICKET_TEMPLATE),
+    })
+    .prefault({}),
+  /** Scheduled routines: one directory with a ROUTINE.md per routine, under `routines/` in Sentinel's home. */
+  routines: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** How often the scheduler checks for due runs (and rescans the routines folder). */
+      tickSec: z.number().int().min(10).max(300).default(30),
+      /** new: a new agent session per run. reuse: resume the routine's previous session for every run. */
+      session: z.enum(ROUTINE_SESSION_MODES).default("new"),
+      /** skip: drop a scheduled run while the previous run is still busy. queue: start it once that run finishes (same day only). */
+      overlap: z.enum(ROUTINE_OVERLAP_MODES).default("skip"),
+      /** Used when a routine's frontmatter sets no model / effort. */
+      model: z.string().min(1).default(AGENT_DEFAULT),
+      effort: z.string().min(1).default(AGENT_DEFAULT),
+      promptTemplate: z.string().min(1).default(DEFAULT_ROUTINE_TEMPLATE),
     })
     .prefault({}),
   /** macOS notifications for what the daemon does in the background. */

@@ -127,6 +127,55 @@ export interface TicketRow {
 }
 
 /**
+ * waiting: nothing due. queued: a due run waits for a free agent slot or for the previous run to finish.
+ * The others mirror the routine's last run.
+ */
+export type RoutineStatus = "waiting" | "queued" | RoutineRunStatus;
+
+/** A routine Sentinel has seen in its routines folder. The definition itself is read from ROUTINE.md. */
+export interface RoutineRow {
+  /** The routine's directory name. */
+  id: string;
+  dir: string;
+  name: string;
+  /** When the routine first parsed; scheduled times before it are never run. */
+  first_seen_at: number;
+  /** The latest scheduled time that was run, skipped or dropped. */
+  last_slot_run: number | null;
+  /** A scheduled time that is due but waiting (capacity, the previous run, or a retry after a failed launch). */
+  pending_slot: number | null;
+  /** When Sentinel last tried to launch the pending run; failed launches are retried after a pause. */
+  last_attempt_at: number | null;
+  /** The session of the latest run (the one session in `reuse` mode). */
+  session_id: string | null;
+  last_run_at: number | null;
+  last_status: RoutineStatus;
+  last_reason: string | null;
+}
+
+/**
+ * starting: Sentinel is opening the pane. started: the agent got its prompt. finished: it went idle or exited after that.
+ * skipped: the previous run was still busy. missed: a queued run never got to start that day.
+ * spawn_failed: launching failed. start_failed: the agent never reported in after launching.
+ */
+export type RoutineRunStatus = "starting" | "started" | "finished" | "skipped" | "missed" | "spawn_failed" | "start_failed";
+
+/** One scheduled or manual run of a routine. */
+export interface RoutineRunRow {
+  id: number;
+  routine_id: string;
+  /** The scheduled time this run is for; the time of the request for manual runs. */
+  slot: number;
+  /** 1 when started by hand (`sentinel routines run`, the dashboard). */
+  manual: number;
+  /** Null for runs that never got a session (skipped, missed). */
+  session_id: string | null;
+  started_at: number;
+  status: RoutineRunStatus;
+  reason: string | null;
+}
+
+/**
  * A comment written by a human (not a bot, not an ignored author) on a watched PR, tracked until resolved.
  * Inline review comments follow their GitHub thread's resolution; every other kind is resolved only
  * when the user marks it resolved in the dashboard.

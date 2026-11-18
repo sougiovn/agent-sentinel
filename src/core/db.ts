@@ -1,5 +1,19 @@
 import { Database } from "bun:sqlite";
-import type { AgentKind, EventRow, HumanCommentRow, Item, PrRow, PrStatus, SessionOptions, SessionRow, TicketRow, TicketStatus } from "./types.ts";
+import type {
+  AgentKind,
+  EventRow,
+  HumanCommentRow,
+  Item,
+  PrRow,
+  PrStatus,
+  RoutineRow,
+  RoutineRunRow,
+  RoutineRunStatus,
+  SessionOptions,
+  SessionRow,
+  TicketRow,
+  TicketStatus,
+} from "./types.ts";
 
 const MIGRATIONS: string[] = [
   `
@@ -114,9 +128,38 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN eval_cost_usd REAL NOT NULL DEFAULT 0;
   ALTER TABLE sessions ADD COLUMN eval_count INTEGER NOT NULL DEFAULT 0;
   `,
+  `
+  CREATE TABLE routines (
+    id TEXT PRIMARY KEY,
+    dir TEXT NOT NULL,
+    name TEXT NOT NULL,
+    first_seen_at INTEGER NOT NULL,
+    last_slot_run INTEGER,
+    pending_slot INTEGER,
+    last_attempt_at INTEGER,
+    session_id TEXT,
+    last_run_at INTEGER,
+    last_status TEXT NOT NULL DEFAULT 'waiting',
+    last_reason TEXT
+  );
+  CREATE TABLE routine_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    routine_id TEXT NOT NULL,
+    slot INTEGER NOT NULL,
+    manual INTEGER NOT NULL DEFAULT 0,
+    session_id TEXT,
+    started_at INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT
+  );
+  CREATE INDEX routine_runs_routine ON routine_runs(routine_id, id);
+  CREATE INDEX routine_runs_session ON routine_runs(session_id);
+  `,
 ];
 
 export const EVENTS_PER_PR = 50;
+/** Runs kept per routine; older ones (and their sessions) are dropped. */
+export const RUNS_PER_ROUTINE = 20;
 
 export interface PendingItem {
   prId: string;
@@ -321,8 +364,98 @@ export class Store {
 
   private pruneSessions() {
     this.db.exec(
-      "DELETE FROM sessions WHERE session_id NOT IN (SELECT session_id FROM prs UNION SELECT session_id FROM tickets)",
+      `DELETE FROM sessions WHERE session_id NOT IN (
+         SELECT session_id FROM prs UNION SELECT session_id FROM tickets
+         UNION SELECT session_id FROM routine_runs WHERE session_id IS NOT NULL
+         UNION SELECT session_id FROM routines WHERE session_id IS NOT NULL)`,
     );
+  }
+
+  // ---- routines ----
+
+  getRoutine(id: string): RoutineRow | null {
+    return this.db.query<RoutineRow, { id: string }>("SELECT * FROM routines WHERE id = $id").get({ id });
+  }
+
+  listRoutines(): RoutineRow[] {
+    return this.db.query<RoutineRow, []>("SELECT * FROM routines ORDER BY id").all();
+  }
+
+  insertRoutine(r: { id: string; dir: string; name: string; now: number }) {
+    this.db
+      .query("INSERT INTO routines (id, dir, name, first_seen_at) VALUES ($id, $dir, $name, $now)")
+      .run({ id: r.id, dir: r.dir, name: r.name, now: r.now });
+  }
+
+  updateRoutine(id: string, patch: Partial<Omit<RoutineRow, "id">>) {
+    const keys = Object.keys(patch);
+    if (keys.length === 0) return;
+    const sets = keys.map((k) => `${k} = $${k}`).join(", ");
+    this.db.query(`UPDATE routines SET ${sets} WHERE id = $id`).run({ ...patch, id } as never);
+  }
+
+  /** Forgets a routine whose directory is gone. Its runs stay, so their sessions still show. */
+  deleteRoutine(id: string) {
+    this.db.query("DELETE FROM routines WHERE id = $id").run({ id });
+  }
+
+  addRoutineRun(r: { routineId: string; slot: number; manual: boolean; sessionId: string | null; now: number; status: RoutineRunStatus; reason: string | null }): number {
+    const row = this.db
+      .query<{ id: number }, Record<string, string | number | null>>(
+        `INSERT INTO routine_runs (routine_id, slot, manual, session_id, started_at, status, reason)
+         VALUES ($r, $slot, $m, $s, $t, $st, $why) RETURNING id`,
+      )
+      .get({ r: r.routineId, slot: r.slot, m: r.manual ? 1 : 0, s: r.sessionId, t: r.now, st: r.status, why: r.reason })!;
+    this.db
+      .query(
+        `DELETE FROM routine_runs WHERE routine_id = $r AND id NOT IN (
+           SELECT id FROM routine_runs WHERE routine_id = $r ORDER BY id DESC LIMIT ${RUNS_PER_ROUTINE})`,
+      )
+      .run({ r: r.routineId });
+    this.pruneSessions();
+    return row.id;
+  }
+
+  getRoutineRun(id: number): RoutineRunRow | null {
+    return this.db.query<RoutineRunRow, { id: number }>("SELECT * FROM routine_runs WHERE id = $id").get({ id });
+  }
+
+  setRoutineRunStatus(id: number, status: RoutineRunStatus, reason: string | null) {
+    this.db.query("UPDATE routine_runs SET status = $st, reason = $r WHERE id = $id").run({ id, st: status, r: reason });
+  }
+
+  /** Newest first. */
+  routineRuns(routineId: string, limit = RUNS_PER_ROUTINE): RoutineRunRow[] {
+    return this.db
+      .query<RoutineRunRow, { r: string; n: number }>("SELECT * FROM routine_runs WHERE routine_id = $r ORDER BY id DESC LIMIT $n")
+      .all({ r: routineId, n: limit });
+  }
+
+  /** Every run that has a session, oldest first. */
+  routineRunsWithSession(): RoutineRunRow[] {
+    return this.db.query<RoutineRunRow, []>("SELECT * FROM routine_runs WHERE session_id IS NOT NULL ORDER BY id").all();
+  }
+
+  /**
+   * Ends the session's newest run if it is still `started` (the agent went idle or exited, or never started),
+   * and mirrors that on its routine. Returns the run it ended.
+   */
+  endRoutineRun(sessionId: string, status: RoutineRunStatus, reason: string | null): RoutineRunRow | null {
+    const run = this.latestRunForSession(sessionId);
+    if (!run || run.status !== "started") return null;
+    this.setRoutineRunStatus(run.id, status, reason);
+    const routine = this.getRoutine(run.routine_id);
+    if (routine?.session_id === sessionId && routine.last_status === "started") {
+      this.updateRoutine(routine.id, { last_status: status, last_reason: reason });
+    }
+    return { ...run, status, reason };
+  }
+
+  /** The session's newest run. */
+  latestRunForSession(sessionId: string): RoutineRunRow | null {
+    return this.db
+      .query<RoutineRunRow, { s: string }>("SELECT * FROM routine_runs WHERE session_id = $s ORDER BY id DESC LIMIT 1")
+      .get({ s: sessionId });
   }
 
   // ---- Jira tickets ----

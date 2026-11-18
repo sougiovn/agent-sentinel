@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { ago, prLine } from "../cli/format.ts";
-import type { PrListEntry, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
+import type { PrListEntry, RoutineListEntry, StatusInfo, TicketListEntry } from "../daemon/protocol.ts";
 import { buildSessionGroups, sessionState, type SessionEntry } from "../tui/sessions.ts";
 import { DEFAULT_STATUS_COLORS } from "../tui/theme.ts";
 
@@ -9,6 +9,8 @@ export interface MenuInput {
   status: StatusInfo | null;
   prs: PrListEntry[];
   tickets: TicketListEntry[];
+  /** Missing (or empty) when the daemon predates routines. */
+  routines?: RoutineListEntry[];
   /** The plugin script; menu actions run it again with the action as arguments. */
   plugin: string;
   now: number;
@@ -16,7 +18,7 @@ export interface MenuInput {
   statusColors?: Record<string, string>;
 }
 
-const ATTENTION_STATUSES = new Set(["error", "spawn_failed", "transition_failed"]);
+const ATTENTION_STATUSES = new Set(["error", "spawn_failed", "transition_failed", "start_failed"]);
 const TITLE_MAX = 60;
 
 /**
@@ -60,14 +62,15 @@ function prNeedsAttention(p: PrListEntry): boolean {
   return ATTENTION_STATUSES.has(p.last_status) || (p.humanOpen ?? 0) > 0;
 }
 
-/** Something the user should look at: a failed PR or ticket, unanswered human comments, or a config/Jira error. */
-export function needsAttention(i: Pick<MenuInput, "status" | "prs" | "tickets">): boolean {
+/** Something the user should look at: a failed PR, ticket or routine run, unanswered human comments, an invalid routine, or a config/Jira error. */
+export function needsAttention(i: Pick<MenuInput, "status" | "prs" | "tickets" | "routines">): boolean {
   if (!i.status) return false;
   return (
     !!i.status.configError ||
     !!i.status.jira?.error ||
     i.prs.some(prNeedsAttention) ||
-    i.tickets.some((t) => ATTENTION_STATUSES.has(t.last_status))
+    i.tickets.some((t) => ATTENTION_STATUSES.has(t.last_status)) ||
+    (i.routines ?? []).some((r) => !r.valid || ATTENTION_STATUSES.has(r.row?.last_status ?? ""))
   );
 }
 
@@ -109,6 +112,12 @@ function sessionLines(e: SessionEntry, i: MenuInput, colors: Record<string, stri
       ),
     );
   }
+  for (const r of e.routines) {
+    const status = r.row?.last_status ?? "waiting";
+    const title = menuText(`${r.id} - ${r.name}`);
+    const reason = r.row?.last_reason ? ` — ${menuText(r.row.last_reason)}` : "";
+    out.push(line(`    ${truncate(title)} · ${statusLabel(status)}`, [...dot(status, colors), `tooltip=${param(`${title}${reason}`)}`, "trim=false"], true));
+  }
   return out;
 }
 
@@ -136,7 +145,7 @@ export function renderMenu(i: MenuInput): string {
     ].join("\n");
   }
 
-  const groups = buildSessionGroups(i.prs, i.tickets);
+  const groups = buildSessionGroups(i.prs, i.tickets, i.routines ?? []);
   const sessions = groups.reduce((n, g) => n + g.sessions.length, 0);
   const busy = groups.reduce((n, g) => n + g.sessions.filter((e) => e.session?.state === "busy").length, 0);
   const attention = needsAttention(i);
@@ -150,6 +159,9 @@ export function renderMenu(i: MenuInput): string {
   out.push(line(`Sentinel · ${summary.join(" · ")}`, ["size=12", "color=gray"]));
   if (st.configError) out.push(line(`Config error: ${truncate(menuText(st.configError))}`, ["color=red", `tooltip=${param(menuText(st.configError))}`], true));
   if (st.jira?.error) out.push(line(`Jira error: ${truncate(menuText(st.jira.error))}`, ["color=red", `tooltip=${param(menuText(st.jira.error))}`], true));
+  for (const r of (i.routines ?? []).filter((x) => !x.valid)) {
+    out.push(line(`Routine ${menuText(r.id)} is invalid`, ["color=red", `tooltip=${param(menuText(r.error ?? ""))}`], true));
+  }
 
   if (groups.length === 0) out.push("---", line("No agent sessions yet", ["color=gray"]));
   for (const g of groups) {

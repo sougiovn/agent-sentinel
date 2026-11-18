@@ -13,6 +13,8 @@ export interface Paths {
   evalDir: string;
   promptsDir: string;
   hooksDir: string;
+  /** One directory per routine, each holding a ROUTINE.md. */
+  routinesDir: string;
 }
 
 export function sentinelHome(env: Record<string, string | undefined> = process.env): string {
@@ -31,11 +33,12 @@ export function getPaths(home = sentinelHome()): Paths {
     evalDir: join(home, "eval"),
     promptsDir: join(home, "prompts"),
     hooksDir: join(home, "hooks"),
+    routinesDir: join(home, "routines"),
   };
 }
 
 export function ensureHome(paths: Paths): void {
-  for (const dir of [paths.home, paths.evalDir, paths.promptsDir, paths.hooksDir]) mkdirSync(dir, { recursive: true });
+  for (const dir of [paths.home, paths.evalDir, paths.promptsDir, paths.hooksDir, paths.routinesDir]) mkdirSync(dir, { recursive: true });
 }
 
 /** argv prefix that re-invokes this Sentinel binary (compiled or `bun src/cli/main.ts`). */

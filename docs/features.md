@@ -5,6 +5,7 @@ This page describes what Sentinel does today and how each part behaves. The [REA
 - [The flow end to end](#the-flow-end-to-end)
 - [Handing off PRs](#handing-off-prs)
 - [Jira tickets](#jira-tickets)
+- [Routines](#routines)
 - [Polling](#polling)
 - [Detecting new activity](#detecting-new-activity)
 - [Human comments](#human-comments)
@@ -83,6 +84,39 @@ Sentinel can also start work for you. Write a Jira ticket, assign it to yourself
 - **Final statuses:** each Jira poll also looks up, by key, the tracked tickets that aren't `done` and didn't come back in the search. One found in a status listed in `jira.finalStatuses` (default `Done` and `CANCELED`, compared case-insensitively) is marked `done`, and the PR it handed off stops being watched. This catches tickets moved by hand or by Jira automation, and PRs that closed while an older daemon was running.
 - **Limits and retries:** a ticket waits as `queued` while `spawn.maxConcurrent` agents are busy. A failed launch, or an agent that doesn't start within `spawn.startTimeoutSec`, shows `spawn_failed` and is retried on the next poll. A failed transition shows `transition_failed`, and the agent keeps working. A failed search is shown in the dashboard and in `sentinel status`.
 - **Ticket statuses:** `queued`, `started`, `in_review` (PR handed off and the ticket moved to review), `done` (that PR was merged, or the ticket reached a final status), `spawn_failed`, `transition_failed`.
+
+## Routines
+
+Scheduled tasks that Sentinel runs in a new Claude session on a cron schedule, while the daemon is running (`src/daemon/routines.ts`, `src/routines/`). They don't depend on PRs or Jira, and they are on by default (`routines.enabled`).
+
+- **One directory per routine:** `~/.config/sentinel/routines/<id>/ROUTINE.md`. The directory name is the routine's id and must be lower kebab-case (`morning-digest`). Put scripts or other files the routine needs next to `ROUTINE.md`; the prompt tells the agent where the directory is. Hidden directories and loose files are ignored.
+- **ROUTINE.md:** YAML frontmatter, then the instructions for the agent.
+
+  ```md
+  ---
+  name: Morning digest
+  description: PRs waiting on me
+  schedule: "0 8 * * 1-5"   # cron, local time
+  model: sonnet             # optional, else routines.model
+  effort: low               # optional, else routines.effort
+  cwd: ~/work               # optional, default: the routine's directory; relative paths are relative to it
+  enabled: true             # optional
+  ---
+  List the PRs where my review is requested and summarise each one.
+  ```
+
+  `name` and `schedule` are required, and so is a non-empty body.
+- **Schedules:** standard 5-field cron (minute, hour, day of month, month, day of week), in local time. Values, ranges, steps (`*/15`, `8-18/2`), lists, month and weekday names, `7` for Sunday, and `@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`, `@yearly`. When both day of month and day of week are set, a day matching either one counts, as in Vixie cron. Sentinel registers nothing with the system's cron; its own scheduler checks every `routines.tickSec` (default 30s).
+- **Catching up, same day only:** when a scheduled time passes while the daemon is down or the Mac is asleep, the routine runs as soon as Sentinel is up again, if that is still the same day. Times from earlier days are never run: a Thursday 10:00 routine isn't run when you come back on Monday. Several missed times (an hourly routine after a morning off) run once, for the latest one.
+- **New routines:** only times after the routine was first seen count. A routine added at 09:00 with an 08:00 schedule waits for the next 08:00. Run it by hand to start it now.
+- **Running by hand:** `sentinel routines run <id>`, or `x` in the dashboard. A manual run doesn't change the schedule. It is refused while the routine's previous run is still going or every agent slot is busy.
+- **Sessions (`routines.session`):** `new` (default) starts a new Claude session for every run. `reuse` resumes the routine's previous session each time. A running agent gets one line, `Sentinel has a routine to run for you. Read the file <prompt file> and follow its instructions.`
+- **Overlap (`routines.overlap`):** while the previous run's session is still busy, a scheduled time is either skipped (`skip`, the default: it is recorded as a `skipped` run) or queued (`queue`: it starts once that run goes idle). A queued run that hasn't started by midnight is recorded as `missed`.
+- **The prompt:** `routines.promptTemplate`, with placeholders `{{id}}`, `{{name}}`, `{{description}}`, `{{schedule}}`, `{{slot}}` (the scheduled time, or "a manual run requested at …"), `{{dir}}`, `{{cwd}}` and `{{instructions}}` (the body of `ROUTINE.md`).
+- **Limits and retries:** a due run waits as `queued` while `spawn.maxConcurrent` agents are busy. A failed launch shows `spawn_failed` and is retried every 5 minutes, the same day. An agent that doesn't report in within `spawn.startTimeoutSec` makes the run `start_failed`; that one isn't retried.
+- **Invalid routines:** a bad directory name, a missing `ROUTINE.md`, bad YAML, a missing field or a bad cron expression shows the routine as `invalid` with the reason, in the dashboard, `sentinel routines` and the SwiftBar menu, and sends one `routineInvalid` notification per problem. The routine never runs until it is fixed. `sentinel routines check` validates every routine and exits 1 if any is invalid.
+- **Changes:** the folder is rescanned on every check and shortly after anything in it changes. Editing `ROUTINE.md` keeps the routine's history, so changing its schedule can't cause a second run for a time that already ran. A routine with `enabled: false` lets its times pass, so enabling it later doesn't run one from earlier today. Deleting a directory forgets the routine; the sessions of its past runs stay in the dashboard.
+- **Statuses:** `waiting` (nothing due), `queued`, `starting`, `started` (the agent got its prompt), `finished` (it went idle or exited), `skipped`, `missed`, `spawn_failed`, `start_failed`. The list also shows `invalid` and `disabled`.
 
 ## Polling
 
@@ -263,7 +297,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - The daemon is independent of the dashboard: quitting the TUI leaves it running.
 - `sentinel daemon` runs it in the foreground and logs to stderr as well as `sentinel.log`. Startup failures are written to the log too.
 - **Single instance:** a second daemon refuses to start while one is answering on the socket. A leftover socket file from a crashed daemon is removed on start.
-- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `humanComments`, `draft`, `resolveComment`, `goToAgent`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`, `myPrs`, `newWatchDefaults`, `suggestCwd`, `validateCwd`, `repos`. `repos` returns the [repos view](#repos-view): the configured roots and each repo's worktrees with the PR ids and ticket keys tied to them. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
+- **API:** the CLI and TUI talk to the daemon over `~/.config/sentinel/sentinel.sock`, with JSON requests of the form `{ method, params }` (`src/daemon/protocol.ts`). Methods: `status`, `list`, `watch`, `unwatch`, `check`, `refresh`, `history`, `signal`, `pause`, `humanComments`, `draft`, `resolveComment`, `goToAgent`, `reload`, `stop`, `tickets`, `pollTickets`, `dismissTicket`, `routines`, `runRoutine`, `myPrs`, `newWatchDefaults`, `suggestCwd`, `validateCwd`, `repos`. `repos` returns the [repos view](#repos-view): the configured roots and each repo's worktrees with the PR ids and ticket keys tied to them. `refresh` is the manual full poll described under [Polling](#polling). The daemon is the only process that writes to SQLite.
 - **Stopping:** `sentinel stop` asks the daemon to exit; if it doesn't answer, Sentinel sends `SIGTERM` to the PID in `sentinel.pid`. `SIGINT` and `SIGTERM` shut it down cleanly, removing the socket and pidfile. It waits up to 5 seconds for the daemon to stop answering.
 - **Restarting:** `sentinel restart` stops the daemon the same way, then starts a new one in the background (or just starts one if none was running). Use it after upgrading Sentinel, since a daemon started from the old build keeps running until it's stopped.
 - Prompt files older than 7 days are deleted after each poll.
@@ -283,6 +317,9 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `sentinel tickets [--json]` | Table of Jira tickets Sentinel picked up: key, summary, session, pick-up time, status, reason |
 | `sentinel tickets check` | Poll Jira now |
 | `sentinel tickets dismiss <key>` | Hide a ticket from the list; it still won't be picked up again |
+| `sentinel routines [--json]` | Table of routines: id, name, schedule, next run, last run, status, reason (or why it is invalid) |
+| `sentinel routines run <id>` | Run a routine now, outside its schedule |
+| `sentinel routines check` | Validate every routine; exits 1 if any is invalid |
 | `sentinel status [--json]` | PID, home directory, multiplexer, interval, time until next poll, number of PRs, config error |
 | `sentinel reload` | Re-read `config.json` |
 | `sentinel stop` | Stop the daemon |
@@ -331,6 +368,8 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `p` | Pause or resume deliveries to the selected line's session |
 | On a PR | `o` open in the browser (`open`, or `xdg-open` on Linux), `c` check now, `d` then `y` unwatch |
 | On a ticket | `o` open in the browser, `d` then `y` dismiss |
+| On a routine | `x` run it now |
+| `t` | Routines (see below) |
 | `n` / `w` | Watch one of your PRs with a new Claude session (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)) |
 | `g` | Repos and worktrees (see [Repos view](#repos-view)) |
 | `r` | Refresh all watched PRs now and restart the poll countdown (single-flight, 30s cooldown) |
@@ -346,6 +385,21 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - **PR details (`h`):**
   - **Human comments:** one line per comment, open ones first: state, author, file and line (or `conversation`/`review`), and the start of the comment. Below the list, the selected comment in full with the agent's draft: `About` (what it asks), `Change` (what the agent did) and the proposed reply. Keys: `↑`/`↓` select, `y` copies the reply to the clipboard (`pbcopy`, `wl-copy`, `xclip` or `xsel`), `e` edits the reply in `$EDITOR` (saved as your draft), `x` marks the comment resolved or reopens it, `o` opens the comment on GitHub, `Esc` goes back. A thread resolved on GitHub can only be reopened on GitHub.
   - **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `merge_conflict`, `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `start_failed` (pane, items), `error`, `draft_recorded`, `comment_resolved`, `comment_reopened`.
+
+### Routines view
+
+`t` lists every directory in the routines folder: id and name, schedule, next run, last run, status and reason. Invalid routines are shown in red with what is wrong. Below the list, the selected routine's description, directory, start directory, model and effort, and its last five runs (when, the time it was for or `manual`, status, session, reason).
+
+The session of a routine's latest run also shows in the sessions view, under **Routines**, with a `⏱ id - name` line.
+
+| Key | Action |
+| --- | --- |
+| `↑`/`↓` or `k`/`j` | Select a routine |
+| `x` / `Enter` | Run it now |
+| `A` | Go to the last run's agent |
+| `e` | Edit its `ROUTINE.md` in `$VISUAL`/`$EDITOR` |
+| `r` | Rescan the folder |
+| `Esc` / `q` | Back |
 
 ### Repos view
 
@@ -428,7 +482,13 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `jira.reviewStatus` | `"In Review"` | Status to move a ticket to once its session hands off a PR (`pr-watch`); `""` = never |
 | `notifications.enabled` | `true` | macOS notifications from the daemon (see [Notifications](#notifications)) |
 | `notifications.method` | `"auto"` | `auto` (terminal-notifier when installed, else osascript), `terminal-notifier` or `osascript` |
-| `notifications.events.<event>` | `true` each | `prWatched`, `ticketFound`, `ticketTransitioned`, `ticketDone`, `mergeConflict`, `fixNeeded`, `humanComments` |
+| `notifications.events.<event>` | `true` each | `prWatched`, `ticketFound`, `ticketTransitioned`, `ticketDone`, `mergeConflict`, `fixNeeded`, `humanComments`, `routineStarted`, `routineSkipped`, `routineFailed`, `routineInvalid` |
+| `routines.enabled` | `true` | Run [routines](#routines) on their schedules |
+| `routines.tickSec` | `30` | 10–300. How often the scheduler checks for due runs |
+| `routines.session` | `"new"` | `new`: a new session per run. `reuse`: resume the routine's previous session |
+| `routines.overlap` | `"skip"` | While the previous run is busy: `skip` the time, or `queue` it until that run finishes (same day only) |
+| `routines.model` / `routines.effort` | `"default"` / `"default"` | Used when `ROUTINE.md` sets none; `default` omits the flag |
+| `routines.promptTemplate` | built-in | Placeholders `{{id}}`, `{{name}}`, `{{description}}`, `{{schedule}}`, `{{slot}}`, `{{dir}}`, `{{cwd}}`, `{{instructions}}` |
 | `jira.promptTemplate` | built-in | Placeholders `{{key}}`, `{{url}}`, `{{summary}}`, `{{description}}`, `{{cwd}}`, `{{modeInstructions}}` |
 
 **Reloading:**
@@ -455,7 +515,7 @@ The dashboard's colours live in a separate `~/.config/sentinel/theme.json` (`src
 | `modalBackground` | `#1e272e` | Background of the floating dialogs |
 | `statuses.<status>` | see below | Colour of that status on PR and ticket lines |
 
-Statuses default to `no_changes` `#7f8c8d`, `no_action` `#95a5a6`, `pending` `#7f8c8d`, `fix_spawned` `#3498db`, `fix_running` `#f1c40f`, `spawn_failed` `#e74c3c`, `error` `#e74c3c`, `queued` `#3498db`, `started` `#f1c40f`, `in_review` `#2ecc71` and `transition_failed` `#e67e22`. An unknown status uses `text`.
+Statuses default to `no_changes` `#7f8c8d`, `no_action` `#95a5a6`, `pending` `#7f8c8d`, `fix_spawned` `#3498db`, `fix_running` `#f1c40f`, `spawn_failed` `#e74c3c`, `error` `#e74c3c`, `queued` `#3498db`, `started` `#f1c40f`, `in_review` `#2ecc71`, `transition_failed` `#e67e22`, and for routines `waiting` and `disabled` `#7f8c8d`, `starting` `#3498db`, `finished` `#27ae60`, `skipped` and `missed` `#e67e22`, `start_failed` and `invalid` `#e74c3c`. An unknown status uses `text`.
 
 - Colours are `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, a CSS colour name or `transparent`.
 - The TUI watches the file and applies a change about 200 ms after it is saved. `R` (or `r` inside settings) reloads it on demand.
@@ -475,6 +535,7 @@ Everything lives in `~/.config/sentinel/`, or in `$SENTINEL_HOME` if that's set.
 | `sentinel.pid` | Daemon PID |
 | `sentinel.log` | Daemon log |
 | `prompts/` | Rendered fix prompts, kept 7 days |
+| `routines/<id>/ROUTINE.md` | Your [routines](#routines), one directory each, with any files they use |
 | `hooks/claude-settings.json` | Settings passed to every Claude session Sentinel launches: the state hooks, and the daemon socket in the sandbox allowlist |
 | `eval/` | Working directory for evaluator calls |
 | `fixPromptTemplate.md`, `introPromptTemplate.md`, `jira.promptTemplate.md` | Scratch files used when editing a template from the TUI |
@@ -490,6 +551,8 @@ Database tables (`src/core/db.ts`, versioned migrations in `meta.schema_version`
 | `sessions` | Per agent session: agent, directory, model and effort, whether Sentinel has launched it yet (`started`, 0 only for TUI-started sessions before their first launch), multiplexer, pane and tab IDs, busy or idle, paused, agent running, busy-since and last-signal timestamps |
 | `events` | Per-PR history, trimmed to the newest 50 |
 | `tickets` | One row per Jira ticket picked up: URL, summary, session, directory, pick-up time, status, reason, dismissed, and the PR its session handed off |
+| `routines` | One row per routine seen: directory, name, when it was first seen, the latest scheduled time handled, a due time still waiting, the latest run's session, status, reason |
+| `routine_runs` | The newest 20 runs per routine: the time it was for, manual or scheduled, session, start time, status, reason |
 | `human_comments` | Human comments per PR: author, body, location, URL, resolved on GitHub, resolved by you, when and to which session it was delivered, whether the Stop hook asked for its draft, and the draft (summary, change, reply, who wrote it, when) |
 
 The database is open for inspection, for example `sqlite3 ~/.config/sentinel/sentinel.db 'select id, last_status from prs'`. Write to it only while the daemon is stopped.
@@ -507,6 +570,10 @@ The daemon sends a macOS notification when something happens in the background:
 | `mergeConflict` | A poll finds that a PR newly conflicts with its base branch |
 | `fixNeeded` | The evaluator flags feedback (comments, failing checks) for the agent to fix |
 | `humanComments` | A poll finds comments from humans that weren't there before. Comments already on a PR when it's handed off don't count |
+| `routineStarted` | A routine run's agent got its prompt |
+| `routineSkipped` | A scheduled time was skipped because the previous run was still going (`routines.overlap: "skip"`) |
+| `routineFailed` | A routine run couldn't be launched |
+| `routineInvalid` | A routine directory or its `ROUTINE.md` is invalid; once per problem |
 
 Clicking a notification opens its PR or ticket (terminal-notifier only). A notification that can't be sent is logged to `sentinel.log` and never stops a poll. Turn each event off under `notifications.events`, or all of them with `notifications.enabled`, in the TUI's settings (General › Notifications) or `config.json`.
 

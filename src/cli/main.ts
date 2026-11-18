@@ -11,7 +11,7 @@ import { Client, DaemonUnavailableError } from "./client.ts";
 import { bashCompletion, complete } from "./completion.ts";
 import { startDaemon, stopDaemon } from "./daemon-control.ts";
 import { detectAgent, hookSessionId, hookStopActive } from "./detect.ts";
-import { formatHumanComments, formatList, formatStatus, formatTickets } from "./format.ts";
+import { formatHumanComments, formatList, formatRoutines, formatStatus, formatTickets } from "./format.ts";
 
 const HELP = `sentinel — watches PRs for AI agent sessions and resumes them to fix feedback, and starts agents for labelled Jira tickets
 
@@ -29,6 +29,9 @@ Usage:
   sentinel tickets [--json]     List Jira tickets Sentinel picked up
   sentinel tickets check        Poll Jira now
   sentinel tickets dismiss <key>  Hide a ticket (it is still never picked up again)
+  sentinel routines [--json]    List scheduled routines (~/.config/sentinel/routines/<id>/ROUTINE.md)
+  sentinel routines run <id>    Run a routine now, outside its schedule
+  sentinel routines check       Validate every routine; exits 1 if any is invalid
   sentinel status [--json]      Daemon status
   sentinel stop                 Stop the daemon
   sentinel restart              Restart the daemon (e.g. after upgrading Sentinel)
@@ -149,6 +152,24 @@ async function main(argv: string[]) {
       console.log(rest.includes("--json") ? JSON.stringify(list, null, 2) : formatTickets(list));
       return;
     }
+    case "routines": {
+      if (rest[0] === "run") {
+        if (!rest[1]) die("routines run needs a routine id (its directory name)");
+        const r = await client.call("runRoutine", { id: rest[1] }, 120_000);
+        console.log(r.result === "delivered" ? `✓ Started ${rest[1]} in session ${r.sessionId}` : `${rest[1]}: ${r.message}`);
+        return;
+      }
+      const list = await client.call("routines", {});
+      if (rest[0] === "check") {
+        const bad = list.filter((r) => !r.valid);
+        for (const r of list) console.log(r.valid ? `✓ ${r.id} (${r.schedule})` : `✗ ${r.id}: ${r.error}`);
+        if (list.length === 0) console.log(formatRoutines(list, paths.routinesDir));
+        if (bad.length) process.exit(1);
+        return;
+      }
+      console.log(rest.includes("--json") ? JSON.stringify(list, null, 2) : formatRoutines(list, paths.routinesDir));
+      return;
+    }
     case "comments": {
       if (!rest[0]) die("comments needs a PR");
       const list = await client.call("humanComments", { pr: rest[0] });
@@ -226,6 +247,11 @@ async function main(argv: string[]) {
           client
             .call("tickets", {}, 1500)
             .then((list) => list.map((ticket) => ticket.key))
+            .catch(() => []),
+        routineIds: () =>
+          client
+            .call("routines", {}, 1500)
+            .then((list) => list.map((r) => r.id))
             .catch(() => []),
       });
       const lines = result.dirs ? [...result.items, ":dir"] : result.items;
