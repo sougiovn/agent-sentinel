@@ -302,26 +302,38 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 
 `sentinel` (`src/tui/app.tsx`) opens the dashboard. If the daemon isn't running, the TUI starts it on launch, then refreshes from it every 2 seconds.
 
-**Main view:**
+**Main view:** one list of agent sessions, each with the PRs and tickets it works on.
+
 - **Header:** multiplexer, poll interval and countdown to the next poll.
-- **Table:** PRs grouped under an `org/repo` heading (the host is added for GitHub Enterprise), groups sorted alphabetically and PRs by number. Each PR is one line, `#123 - title` (the title is refreshed on every poll), then agent, session (with ⏸ when paused), last checked, open human comments (`HUMAN`, highlighted when there are any), merge state (`MERGE`: `conflict` in the error colour, `ok`, or `-` until GitHub has reported it), status (colour-coded) and reason. The table title shows the total of open human comments across all PRs.
-- **Details panel:** the selected PR's URL, full session ID, directory, pane ID and agent state.
+- **Table title:** the number of sessions shown, and the total of open human comments across all PRs.
+- **Groups:** a session goes under the `org/repo` of its PRs (the host is added for GitHub Enterprise). A session with PRs in more than one repo goes under **Multiple repositories** (its PR lines then show their repo), and one with only tickets goes under **No PR yet**. Repos are sorted alphabetically, followed by those two groups. Inside a group, sessions are ordered by their oldest PR or ticket.
+- **Session line:** a dot coloured by state (busy, idle, paused, or muted when the agent isn't running in its pane), the short session id, agent and model, then the state and how many PRs and tickets it has.
+- **PR and ticket lines:** under their session, PRs first, with the columns `CHECKED`, `HUMAN`, `MERGE`, `STATUS`, `REASON`. A ticket's `CHECKED` is when it was picked up. A ticket whose session handed off a PR shows both under that session.
+- The list scrolls inside its box to keep the selection in view, and the selection stays on the same line across refreshes.
+- **Session details (`Enter`):** expands the details into the lower half of the page, with the list on the top half. It follows the selection, so `↑`/`↓` move through sessions and their lines while it stays open. It shows:
+  - the session id, agent, model, effort, pane, directory and state;
+  - **Evaluator spend:** what the evaluator (`evaluator.model`, Sonnet by default) has cost this session in total, and how many runs. The total includes failed runs that reported a cost, and keeps PRs that were merged or unwatched;
+  - **PRs · N:** each PR with its status, open human comments, its own evaluator cost and run count, and its last reason;
+  - **Tickets · N:** each ticket with its status, the PR it handed off and its last reason;
+  - **History:** a scrollable list of events, one per line, newest first. On a PR line it's that PR's history; on a ticket line, the history of the PR it handed off; otherwise every PR of the session, merged, with the PR number on each line. `J`/`K` (or `PgUp`/`PgDn`) scroll it, and `h` opens the PR's full-page history with its human comments.
+  The selected PR or ticket is marked `▸`. `Enter` or `Esc` closes it.
+- **Details panel:** under the list, for the selected line: a session's full id, model, effort, directory and pane; a PR's or ticket's URL, full session ID, directory, pane ID and agent state.
 
 | Key | Action |
 | --- | --- |
-| `↑`/`↓` or `k`/`j` | Select a PR |
-| `/` | Filter watched PRs: every word must appear in the PR's `org/repo` or title. `Enter` keeps the filter and returns to the list, `Esc` clears it |
-| `Enter` | PR details: human comments and event history |
+| `↑`/`↓` or `k`/`j` | Select a session, PR or ticket line |
+| `/` | Filter sessions: every word must appear in the session id, agent, group, or one of its PRs (`org/repo`, `#number`, title, status) or tickets (key, summary, status). Matching sessions are shown with all their PRs and tickets. `Enter` keeps the filter and returns to the list, `Esc` clears it |
+| `Enter` | Expand or close the session details (lower half of the page) |
+| `J`/`K`, `PgUp`/`PgDn` | Scroll the details' history while it's open |
+| `h` | Full-page history and human comments of the selected PR (or the session's only PR) |
+| `Esc` | Close the session details, then clear the filter |
+| `A` | Go to the selected line's agent session (see [Going to the agent](#going-to-the-agent)) |
+| `p` | Pause or resume deliveries to the selected line's session |
+| On a PR | `o` open in the browser (`open`, or `xdg-open` on Linux), `c` check now, `d` then `y` unwatch |
+| On a ticket | `o` open in the browser, `d` then `y` dismiss |
 | `n` / `w` | Watch one of your PRs with a new Claude session (see [Watching a PR from the TUI](#watching-a-pr-from-the-tui-new-sessions)) |
 | `g` | Repos and worktrees (see [Repos view](#repos-view)) |
-| `o` | Open the selected PR in the browser (`open`, or `xdg-open` on Linux) |
-| `c` | Check the selected PR now |
 | `r` | Refresh all watched PRs now and restart the poll countdown (single-flight, 30s cooldown) |
-| `d`, then `y` | Unwatch the selected PR |
-| `p` | Pause or resume deliveries to the PR's agent session |
-| `A` | Go to the PR's agent session (see [Going to the agent](#going-to-the-agent)) |
-| `v` | Switch to the [sessions view](#sessions-view) and back |
-| `t` | Move the selection between the PR list and the Jira tickets list. With a ticket selected: `↑/↓` move, `o` opens it in the browser, `A` goes to its agent, `d` dismisses it (asks first), `p` pauses or resumes its session, `t`/`Esc` go back to PRs |
 | `s` | Settings |
 | `R` | Reload config and theme in the TUI and the daemon |
 | `S` | Retry starting the daemon (when it's offline) |
@@ -331,40 +343,9 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 - **Footer and `?`:** the footer lists the current screen's shortcuts, most used first, and keeps as many whole ones as fit the terminal width; a `…` marks the ones left out. `? help` is always shown at the right. `?` opens a dialog listing all of the current screen's shortcuts, plus the two that work everywhere (`?` and `Ctrl+C`). It works on every screen, including while a filter input or a value being edited has focus, so `?` can't be typed into those inputs. While the dialog is open other keys are ignored; `Esc`, `?` or `Enter` close it, and `↑`/`↓` scroll it when it doesn't fit. `/` filters the list: every word must appear in a shortcut's key or action. While typing, `Enter` keeps the filter and `Esc` clears it; with a filter kept, `Esc` clears it first and a second `Esc` closes the dialog. A filter input open under the dialog keeps its text and focus. A pending unwatch or dismiss confirmation is cancelled when `?` is pressed. Messages such as "Saved" replace the footer hints for 5 seconds but leave `? help` in place.
 - **Daemon offline:** while the daemon is starting, the TUI shows "Starting Sentinel daemon…". If it fails to start or stops later, the TUI shows the error and offers `S` to try again.
 - **Config errors:** an invalid config file, or a daemon running on its last good config, is shown in a red banner.
-- **PR details (`Enter`):**
+- **PR details (`h`):**
   - **Human comments:** one line per comment, open ones first: state, author, file and line (or `conversation`/`review`), and the start of the comment. Below the list, the selected comment in full with the agent's draft: `About` (what it asks), `Change` (what the agent did) and the proposed reply. Keys: `↑`/`↓` select, `y` copies the reply to the clipboard (`pbcopy`, `wl-copy`, `xclip` or `xsel`), `e` edits the reply in `$EDITOR` (saved as your draft), `x` marks the comment resolved or reopens it, `o` opens the comment on GitHub, `Esc` goes back. A thread resolved on GitHub can only be reopened on GitHub.
   - **History:** the last 50 events per PR, newest first: `registered`, `reassigned`, `session_started`, `new_items`, `evaluated` (with verdict, reason and cost), `merge_conflict`, `fix_delivered` (pane, items, prompt file), `agent_idle`, `agent_exit`, `spawn_failed`, `start_failed` (pane, items), `error`, `draft_recorded`, `comment_resolved`, `comment_reopened`.
-
-### Sessions view
-
-`v` on the main view swaps the PR list and the Jira tickets box for one list of agent sessions, each with the PRs and tickets it works on. `v` again goes back. This is a trial of a session-first main page; the PR and ticket lists stay the default for now.
-
-- **Groups:** a session goes under the `org/repo` of its PRs. A session with PRs in more than one repo goes under **Multiple repositories** (its PR lines then show their repo), and one with only tickets goes under **No PR yet**. Repos are sorted alphabetically, followed by those two groups. Inside a group, sessions are ordered by their oldest PR or ticket.
-- **Session line:** a dot coloured by state (busy, idle, paused, or muted when the agent isn't running in its pane), the short session id, agent and model, then the state and how many PRs and tickets it has. The small details panel under the list shows the full session id, model, effort, directory and pane.
-- **PR and ticket lines:** under their session, PRs first, with the same columns as the PR list (`CHECKED`, `HUMAN`, `MERGE`, `STATUS`, `REASON`). A ticket's `CHECKED` is when it was picked up. A ticket whose session handed off a PR shows both under that session.
-- The list scrolls inside its box to keep the selection in view, and the selection stays on the same line across refreshes.
-- **Session details (`Enter`):** expands the details into the lower half of the page, with the list on the top half. It follows the selection, so `↑`/`↓` move through sessions and their lines while it stays open. It shows:
-  - the session id, agent, model, effort, pane, directory and state;
-  - **Evaluator spend:** what the evaluator (`evaluator.model`, Sonnet by default) has cost this session in total, and how many runs. The total includes failed runs that reported a cost, and keeps PRs that were merged or unwatched;
-  - **PRs · N:** each PR with its status, open human comments, its own evaluator cost and run count, and its last reason;
-  - **Tickets · N:** each ticket with its status, the PR it handed off and its last reason;
-  - **History:** a scrollable list of events, one per line, newest first. On a PR line it's that PR's history; on a ticket line, the history of the PR it handed off; otherwise every PR of the session, merged, with the PR number on each line. `J`/`K` (or `PgUp`/`PgDn`) scroll it, and `h` opens the PR's full-page history with its human comments.
-  The selected PR or ticket is marked `▸`. `Enter` or `Esc` closes it.
-
-| Key | Action |
-| --- | --- |
-| `↑`/`↓` or `k`/`j` | Select a session, PR or ticket line |
-| `/` | Filter sessions: every word must appear in the session id, agent, group, or one of its PRs (`org/repo`, `#number`, title, status) or tickets (key, summary, status). Matching sessions are shown with all their PRs and tickets |
-| `A` | Go to the selected line's agent session |
-| `p` | Pause or resume the selected line's session |
-| `Enter` | Expand or close the session details (lower half of the page) |
-| `J`/`K`, `PgUp`/`PgDn` | Scroll the details' history while it's open |
-| `h` | Full-page history and human comments of the selected PR (or the session's only PR) |
-| `Esc` | Close the session details, then clear the filter |
-| On a PR | `o` open, `c` check now, `d` unwatch, as in the PR list |
-| On a ticket | `o` open, `d` dismiss (asks first) |
-| `n`, `g`, `r`, `s`, `R`, `q` | As on the PR list |
-| `v` | Back to the PR and ticket lists |
 
 ### Repos view
 
@@ -387,7 +368,7 @@ When a poll finds a PR in `CLOSED` or `MERGED` state, Sentinel deletes the PR ro
 | `?` | Show or hide this view's shortcuts |
 | `Esc`/`q` | Back to the main view (`Esc` clears an active filter first) |
 
-**Settings** open in a dialog over the PR list, split into three tabs: **General** (multiplexer, poll interval, agents, spawning, notifications), **Pull requests** (feedback, evaluator, new watch defaults) and **Tickets** (the ticket agent, then one subheading per ticket source; Jira for now). Each tab groups its fields under subheadings, so labels don't repeat the group name. Each field shows its current value on one line (long values are cut short), and the list scrolls to keep the selection visible. Enums and on/off switches show every option, with the current one highlighted. The dialog is sized for the tallest tab, so it doesn't change size when switching.
+**Settings** open in a dialog over the sessions list, split into three tabs: **General** (multiplexer, poll interval, agents, spawning, notifications), **Pull requests** (feedback, evaluator, new watch defaults) and **Tickets** (the ticket agent, then one subheading per ticket source; Jira for now). Each tab groups its fields under subheadings, so labels don't repeat the group name. Each field shows its current value on one line (long values are cut short), and the list scrolls to keep the selection visible. Enums and on/off switches show every option, with the current one highlighted. The dialog is sized for the tallest tab, so it doesn't change size when switching.
 
 | Key | Action |
 | --- | --- |
@@ -472,7 +453,7 @@ The dashboard's colours live in a separate `~/.config/sentinel/theme.json` (`src
 | `pending` | `#f1c40f` | Work-in-progress messages |
 | `selectionBackground` | `#2c3e50` | Background of the selected row |
 | `modalBackground` | `#1e272e` | Background of the floating dialogs |
-| `statuses.<status>` | see below | Colour of that status in the PR and ticket lists |
+| `statuses.<status>` | see below | Colour of that status on PR and ticket lines |
 
 Statuses default to `no_changes` `#7f8c8d`, `no_action` `#95a5a6`, `pending` `#7f8c8d`, `fix_spawned` `#3498db`, `fix_running` `#f1c40f`, `spawn_failed` `#e74c3c`, `error` `#e74c3c`, `queued` `#3498db`, `started` `#f1c40f`, `in_review` `#2ecc71` and `transition_failed` `#e67e22`. An unknown status uses `text`.
 
@@ -555,9 +536,9 @@ The menu bar shows the number of sessions (`busy/total` while any is busy), with
 
 ## Verification status and known limits
 
-Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, theme parsing (defaults, partial files, status merge, invalid colours and unknown keys), database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, the repos view data (parsing `git worktree list --porcelain`, listing main checkouts but not linked worktrees, tying PRs to the deepest worktree and tickets by handed-off PR, key in the branch or directory name, then session directory, a repo whose worktrees can't be listed, roots that don't exist), new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), waiting for a new pane's shell prompt (and typing anyway when none shows up), the start check (rollback, retry in a new pane, a confirmed delivery, a new session getting `--session-id` again, a Jira ticket going back to `spawn_failed`), merge conflicts (skipping the evaluator, once per head, `UNKNOWN` keeping the last state, delivery with flagged comments, a PR already conflicting when watched), PR titles, evaluator cost tracking (per PR and per session, failed runs that report a cost, the totals surviving a database upgrade), the session details helpers (which PRs' history to show, merging histories, one-line event summaries, cost formatting), the stop logic behind `stop` and `restart`, notifications (each event firing once, baselined human comments, failed Jira moves staying quiet, per-event and master switches, a failing notifier only being logged, terminal-notifier and osascript arguments), and the SwiftBar plugin (menu rendering, cooldown and offline states, unsafe titles, the generated script, install paths and overwrite protection, opening the dashboard and settings in a new tab). TUI tests drive the sessions view (grouping, multi-repo and ticket-only sessions, pausing, the expanded session details following the selection with its spend, PRs, tickets and history, `h` for a PR's full-page history, opening, the filter and going to a ticket's agent), the settings dialog (tabs, enum options, `←`/`→`) and its per-tab filter, the PR picker and new-watch form end to end (the `‹ ›` marker on the selected choice, filtering, prefilled directory, validation and the remote-mismatch warning), the watched-PR filter, grouping, the `MERGE` column and the conflict banner in the PR details, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, a custom theme and its live reload (including an invalid edit keeping the last good theme), and starting the daemon.
+Covered by `bun test`, with fake `gh`, evaluator and multiplexer: the poll → evaluate → queue → deliver flow, baseline and `--include-existing`, ignored authors, failing checks and log tails, retry after evaluator, GitHub and delivery failures, closed-PR cleanup, the per-session queue (busy, idle, exit, pause, busy timeout, recreating closed panes, batching across PRs, `maxConcurrent`), manual refresh (all PRs, single-flight, 30s cooldown, poll countdown reset), config parsing and reload, theme parsing (defaults, partial files, status merge, invalid colours and unknown keys), database migrations, the API, launch command quoting (including `--session-id`, `--model` and `--effort`), `gh search prs` argument building and parsing, finding local clones and validating directories, the repos view data (parsing `git worktree list --porcelain`, listing main checkouts but not linked worktrees, tying PRs to the deepest worktree and tickets by handed-off PR, key in the branch or directory name, then session directory, a repo whose worktrees can't be listed, roots that don't exist), new-session watches (start now, on first feedback, existing feedback, a failed first launch, Codex rejected), waiting for a new pane's shell prompt (and typing anyway when none shows up), the start check (rollback, retry in a new pane, a confirmed delivery, a new session getting `--session-id` again, a Jira ticket going back to `spawn_failed`), merge conflicts (skipping the evaluator, once per head, `UNKNOWN` keeping the last state, delivery with flagged comments, a PR already conflicting when watched), PR titles, evaluator cost tracking (per PR and per session, failed runs that report a cost, the totals surviving a database upgrade), the session details helpers (which PRs' history to show, merging histories, one-line event summaries, cost formatting), the stop logic behind `stop` and `restart`, notifications (each event firing once, baselined human comments, failed Jira moves staying quiet, per-event and master switches, a failing notifier only being logged, terminal-notifier and osascript arguments), and the SwiftBar plugin (menu rendering, cooldown and offline states, unsafe titles, the generated script, install paths and overwrite protection, opening the dashboard and settings in a new tab). TUI tests drive the sessions view (grouping, multi-repo and ticket-only sessions, pausing, the expanded session details following the selection with its spend, PRs, tickets and history, `h` for a PR's full-page history, opening, the filter and going to a ticket's agent), the settings dialog (tabs, enum options, `←`/`→`) and its per-tab filter, the PR picker and new-watch form end to end (the `‹ ›` marker on the selected choice, filtering, prefilled directory, validation and the remote-mismatch warning), the `MERGE` column and the conflict banner in the PR details, opening a PR in the browser, the `r`/`R` keys and their cooldown feedback, a custom theme and its live reload (including an invalid edit keeping the last good theme), and starting the daemon.
 
-Human comments are covered with the fake `gh`: tracking baselined comments while skipping bots and `@me`, inline comments following their review thread, deleted comments, conversation comments staying open after replies until you resolve them, reopening, drafts (partial updates, unknown items, unwatched PRs), the fix prompt's instructions, the Stop hook asking once for missing drafts (not for bot or resolved comments, not once drafts exist, not while `stop_hook_active`, and again only for the comments of a later delivery), and closed PRs dropping their human comments. Unit tests cover the `reviewThreads` GraphQL arguments and pagination, reading `stop_hook_active` from the hook payload, the comment states, the `sentinel comments` output, the `HUMAN` and `MERGE` columns in `sentinel list`, and completion for `comments` and `draft`. TUI tests drive the PR details: the counts in the table, the draft, copying the reply, opening the comment, marking it resolved, refusing to reopen a thread resolved on GitHub, and having no reply to copy. Not covered by automated tests: the `{"decision":"block"}` output of `sentinel hook idle` (tests go through the daemon API), and editing a reply in `$EDITOR`. The `reviewThreads` query was checked by hand against a real PR: its `databaseId`s match the REST comment ids.
+Human comments are covered with the fake `gh`: tracking baselined comments while skipping bots and `@me`, inline comments following their review thread, deleted comments, conversation comments staying open after replies until you resolve them, reopening, drafts (partial updates, unknown items, unwatched PRs), the fix prompt's instructions, the Stop hook asking once for missing drafts (not for bot or resolved comments, not once drafts exist, not while `stop_hook_active`, and again only for the comments of a later delivery), and closed PRs dropping their human comments. Unit tests cover the `reviewThreads` GraphQL arguments and pagination, reading `stop_hook_active` from the hook payload, the comment states, the `sentinel comments` output, the `HUMAN` and `MERGE` columns in `sentinel list`, and completion for `comments` and `draft`. TUI tests drive the PR details (`h`): the counts in the table, the draft, copying the reply, opening the comment, marking it resolved, refusing to reopen a thread resolved on GitHub, and having no reply to copy. Not covered by automated tests: the `{"decision":"block"}` output of `sentinel hook idle` (tests go through the daemon API), and editing a reply in `$EDITOR`. The `reviewThreads` query was checked by hand against a real PR: its `databaseId`s match the REST comment ids.
 
 TUI tests also cover the repos view: worktrees with their PR and ticket, opening them, the `/` filter, scrolling in a short terminal with the footer kept visible, `r` rescanning with the selection kept on the same worktree, the empty-roots message, and refusing to open while the daemon is offline.
 
