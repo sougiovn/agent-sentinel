@@ -30,6 +30,11 @@ export function ticketJql(opts: { label: string; statuses: string[] }): string {
   );
 }
 
+/** The given tickets, by key, whatever their status. */
+export function keysJql(keys: string[]): string {
+  return `key IN (${keys.map(jqlString).join(", ")})`;
+}
+
 /** Plain text from a Jira description: a string (v2 API) or an Atlassian Document Format tree (v3 API). */
 export function descriptionText(d: unknown): string {
   if (d == null) return "";

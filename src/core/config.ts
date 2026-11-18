@@ -124,6 +124,8 @@ export const ConfigSchema = z.object({
       mergedStatus: z.string().default("Done"),
       /** Status to move a ticket back to when that PR is closed without merging. "" = don't transition. */
       closedStatus: z.string().default("In Progress"),
+      /** Jira statuses that end a ticket (case-insensitive). A tracked ticket found in one is marked done. */
+      finalStatuses: z.array(z.string().min(1)).default(["Done", "CANCELED"]),
       promptTemplate: z.string().min(1).default(DEFAULT_TICKET_TEMPLATE),
     })
     .prefault({}),

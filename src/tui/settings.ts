@@ -92,6 +92,7 @@ export const FIELDS: Field[] = [
     { ...f("jira.reviewStatus", "Status after PR handoff (blank = never)", "string", (c) => c.jira.reviewStatus, (c, v) => (c.jira.reviewStatus = v)), allowEmpty: true },
     { ...f("jira.mergedStatus", "Status after PR merge (blank = never)", "string", (c) => c.jira.mergedStatus, (c, v) => (c.jira.mergedStatus = v)), allowEmpty: true },
     { ...f("jira.closedStatus", "Status after PR closed unmerged (blank = never)", "string", (c) => c.jira.closedStatus, (c, v) => (c.jira.closedStatus = v)), allowEmpty: true },
+    f("jira.finalStatuses", "Final statuses (ticket is done)", "list", (c) => c.jira.finalStatuses, (c, v) => (c.jira.finalStatuses = v)),
   ]),
 ];
 

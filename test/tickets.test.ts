@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { defaultConfig, saveConfig, type Config } from "../src/core/config.ts";
 import { renderTicketPrompt } from "../src/evaluator/prompt.ts";
-import { AcliJira, browseUrl, descriptionText, parseAuthSite, parseSearch, ticketJql } from "../src/jira/acli.ts";
+import { AcliJira, browseUrl, descriptionText, keysJql, parseAuthSite, parseSearch, ticketJql } from "../src/jira/acli.ts";
 import type { Exec } from "../src/core/exec.ts";
 import { formatStatus, formatTickets } from "../src/cli/format.ts";
 import { cycleEnum, displayValue, FIELDS, parseValue } from "../src/tui/settings.ts";
@@ -30,6 +30,10 @@ describe("jira helpers", () => {
       'assignee = currentUser() AND labels = "sentinel" AND status IN ("To Do", "In Progress") ORDER BY created ASC',
     );
     expect(ticketJql({ label: 'a"b\\c', statuses: ["X"] })).toContain('labels = "a\\"b\\\\c"');
+  });
+
+  test("key JQL quotes each key", () => {
+    expect(keysJql(["CP-1", "CP-2"])).toBe('key IN ("CP-1", "CP-2")');
   });
 
   test("parses acli search JSON, with ADF descriptions", () => {
@@ -477,6 +481,36 @@ describe("PR handoff moves the ticket to review", () => {
     await closePr(t, "MERGED");
     expect(t.store.getTicket("CP-1")!.last_status).toBe("transition_failed");
     expect(t.store.getPr("github.com/acme/web#1")).toBeNull();
+  });
+
+  test("a ticket moved to a final status in Jira is marked done and its PR unwatched", async () => {
+    const t = await startedTicket();
+    await watchFrom(t);
+    t.jira.tickets[0]!.status = "Done";
+    await t.daemon.runTicketPoll();
+    expect(t.jira.searches.at(-1)).toBe('key IN ("CP-1")');
+    const row = t.store.getTicket("CP-1")!;
+    expect(row.last_status).toBe("done");
+    expect(row.last_reason).toBe("Ticket is Done in Jira");
+    expect(t.store.getPr("github.com/acme/web#1")).toBeNull();
+    const searches = t.jira.searches.length;
+    await t.daemon.runTicketPoll();
+    expect(t.jira.searches).toHaveLength(searches + 1); // done tickets aren't looked up again
+  });
+
+  test("final statuses come from config and match case-insensitively; others are left alone", async () => {
+    const t = await startedTicket((c) => (c.jira.finalStatuses = ["Done", "CANCELED"]));
+    t.jira.tickets[0]!.status = "Canceled";
+    t.jira.add("CP-2", { status: "Blocked" });
+    t.store.insertTicket({ key: "CP-2", url: "u", summary: "s", sessionId: "s2", cwd: "/w", now: 0, session: { started: false } });
+    t.store.setTicketStatus("CP-2", "started", null);
+    await t.daemon.runTicketPoll();
+    expect(t.store.getTicket("CP-1")!.last_status).toBe("done");
+    expect(t.store.getTicket("CP-2")!.last_status).toBe("started");
+  });
+
+  test("defaults treat Done and CANCELED as final", () => {
+    expect(defaultConfig().jira.finalStatuses).toEqual(["Done", "CANCELED"]);
   });
 
   test("the pr-watch prompt tells the agent Sentinel owns the status", () => {

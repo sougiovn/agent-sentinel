@@ -71,7 +71,7 @@ Press `n` in the dashboard to watch a PR that no agent session owns yet. Sentine
 
 Sentinel can also start work for you. Write a Jira ticket, assign it to yourself, add the configured label (`jira.label`, default `sentinel`), and on the next Jira poll Sentinel starts a new Claude session for it. This is off until you set `jira.enabled` (`src/daemon/tickets.ts`, `src/jira/acli.ts`).
 
-- **Reading Jira:** through the Atlassian CLI, which must be logged in (`acli jira auth login`). Each poll runs `acli jira workitem search --json` with `assignee = currentUser() AND labels = "<label>" AND status IN (<jira.statuses>)`, by default `"To Do", "In Progress"`.
+- **Reading Jira:** through the Atlassian CLI, which must be logged in (`acli jira auth login`). Each poll runs `acli jira workitem search --json` with `assignee = currentUser() AND labels = "<label>" AND status IN (<jira.statuses>)`, by default `"To Do", "In Progress"`. A second search, `key IN (...)`, reads the current status of tracked tickets that the first one didn't return (see **Final statuses** below).
 - **Own interval:** `jira.pollIntervalSec` (default 600s, minimum 60), separate from the PR poll. The first Jira poll runs about 5 seconds after the daemon starts. `r` in the dashboard and `sentinel tickets check` poll Jira now too. Jira polls share the PR poll's queue, so they never run at the same time.
 - **One session per ticket:** a new ticket gets a row in `tickets` and a new Claude session that starts in `jira.cwd` (default `~/work`), with `jira.model` and `jira.effort`. That row means Sentinel never starts a second session for the ticket, even though an In Progress ticket still matches the query. Dismissing a ticket only hides it.
 - **The prompt:** `jira.promptTemplate`, with placeholders `{{key}}`, `{{url}}`, `{{summary}}`, `{{description}}`, `{{cwd}}` and `{{modeInstructions}}`. The default tells the agent to work out the repository from the ticket and to ask you if it isn't sure or the repository isn't available locally.
@@ -80,8 +80,9 @@ Sentinel can also start work for you. Write a Jira ticket, assign it to yourself
   - `pr`: implement and open a PR, then stop.
   - `plan`: write a plan and wait for your approval.
 - **Writing to Jira:** the only writes are status transitions. Once the agent has started, Sentinel moves the ticket to `jira.transitionTo` (default `In Progress`) with `acli jira workitem transition`. A ticket already in that status isn't moved. Leave the field empty to skip this transition. The later transitions, to `jira.reviewStatus`, `jira.mergedStatus` and `jira.closedStatus`, are described under `pr-watch` above. Sentinel transitions only after the session starts, so a ticket whose launch failed stays where it was.
+- **Final statuses:** each Jira poll also looks up, by key, the tracked tickets that aren't `done` and didn't come back in the search. One found in a status listed in `jira.finalStatuses` (default `Done` and `CANCELED`, compared case-insensitively) is marked `done`, and the PR it handed off stops being watched. This catches tickets moved by hand or by Jira automation, and PRs that closed while an older daemon was running.
 - **Limits and retries:** a ticket waits as `queued` while `spawn.maxConcurrent` agents are busy. A failed launch, or an agent that doesn't start within `spawn.startTimeoutSec`, shows `spawn_failed` and is retried on the next poll. A failed transition shows `transition_failed`, and the agent keeps working. A failed search is shown in the dashboard and in `sentinel status`.
-- **Ticket statuses:** `queued`, `started`, `in_review` (PR handed off and the ticket moved to review), `done` (that PR was merged), `spawn_failed`, `transition_failed`.
+- **Ticket statuses:** `queued`, `started`, `in_review` (PR handed off and the ticket moved to review), `done` (that PR was merged, or the ticket reached a final status), `spawn_failed`, `transition_failed`.
 
 ## Polling
 

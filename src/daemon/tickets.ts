@@ -2,7 +2,7 @@ import type { Config } from "../core/config.ts";
 import type { Store } from "../core/db.ts";
 import { expandHome } from "../core/repo-locate.ts";
 import { renderTicketPrompt } from "../evaluator/prompt.ts";
-import { ticketJql, type JiraClient, type Ticket } from "../jira/acli.ts";
+import { keysJql, ticketJql, type JiraClient, type Ticket } from "../jira/acli.ts";
 import type { Dispatcher } from "../spawn/dispatcher.ts";
 
 export interface TicketWatcherDeps {
@@ -19,6 +19,8 @@ export interface TicketPollResult {
   found: string[];
   /** Ticket keys whose agent session started during this poll. */
   started: string[];
+  /** Tracked ticket keys found in one of `jira.finalStatuses` during this poll, now marked done. */
+  finished: string[];
 }
 
 /**
@@ -30,13 +32,39 @@ export class TicketWatcher {
 
   async poll(): Promise<TicketPollResult> {
     const cfg = this.d.config().jira;
-    if (!cfg.enabled) return { found: [], started: [] };
+    if (!cfg.enabled) return { found: [], started: [], finished: [] };
     const tickets = await this.d.jira.search(ticketJql(cfg));
     const started: string[] = [];
     for (const t of tickets) {
       if (await this.pickUp(t)) started.push(t.key);
     }
-    return { found: tickets.map((t) => t.key), started };
+    const found = tickets.map((t) => t.key);
+    const finished = await this.syncFinished(new Set(found));
+    return { found, started, finished };
+  }
+
+  /**
+   * Tracked tickets that dropped out of the search may have reached a final status in Jira (moved there by
+   * hand, or by Jira automation). Marks those done and stops watching the PR they handed off.
+   */
+  private async syncFinished(found: Set<string>): Promise<string[]> {
+    const { store, log } = this.d;
+    const final = new Set(this.d.config().jira.finalStatuses.map((s) => s.toLowerCase()));
+    const open = store.listTickets().filter((t) => t.last_status !== "done" && !found.has(t.key));
+    if (!open.length || !final.size) return [];
+    const current = await this.d.jira.search(keysJql(open.map((t) => t.key)));
+    const finished: string[] = [];
+    for (const t of current) {
+      const row = open.find((r) => r.key === t.key);
+      if (!row || !final.has(t.status.toLowerCase())) continue;
+      store.setTicketStatus(t.key, "done", `Ticket is ${t.status} in Jira`);
+      if (row.pr_id && store.getPr(row.pr_id)) {
+        store.deletePr(row.pr_id);
+        log(`${t.key} is ${t.status}; stopped watching ${row.pr_id}`);
+      } else log(`${t.key} is ${t.status}; marked done`);
+      finished.push(t.key);
+    }
+    return finished;
   }
 
   /**

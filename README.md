@@ -35,7 +35,7 @@ Or press `n` in the dashboard to watch one of your open PRs without an agent ses
 ### Jira tickets
 
 Set `jira.enabled` (in `config.json`, or Tickets › Jira › Pick up tickets in settings), then assign yourself a ticket in To Do or In Progress and add the label `sentinel` (`jira.label`). On the next Jira poll (every `jira.pollIntervalSec`, 600s by default) Sentinel starts a new Claude session in `~/work` with the ticket. The agent works out the repository from the ticket and asks you if it isn't sure. Sentinel then moves the ticket to In Progress. Each ticket gets one session, ever. `jira.mode` sets how far the agent goes:
-- `pr-watch` (default): implement, open a PR, and hand it to Sentinel with `sentinel watch`. Sentinel then moves the ticket to In Review (`jira.reviewStatus`). When that PR is merged, the ticket moves to Done (`jira.mergedStatus`); when it's closed without merging, back to In Progress (`jira.closedStatus`).
+- `pr-watch` (default): implement, open a PR, and hand it to Sentinel with `sentinel watch`. Sentinel then moves the ticket to In Review (`jira.reviewStatus`). When that PR is merged, the ticket moves to Done (`jira.mergedStatus`); when it's closed without merging, back to In Progress (`jira.closedStatus`). A ticket you move to a final status yourself (`jira.finalStatuses`, Done or CANCELED by default) is marked done on the next Jira poll, and its PR is no longer watched.
 - `pr`: implement and open a PR.
 - `plan`: write a plan and wait.
 
@@ -85,7 +85,7 @@ The dashboard's colours live in `theme.json`, created with the defaults when the
     "no_changes": "#7f8c8d", "no_action": "#95a5a6", "pending": "#7f8c8d",
     "fix_spawned": "#3498db", "fix_running": "#f1c40f", "spawn_failed": "#e74c3c",
     "error": "#e74c3c", "queued": "#3498db", "started": "#f1c40f",
-    "in_review": "#2ecc71", "transition_failed": "#e67e22"
+    "in_review": "#2ecc71", "done": "#27ae60", "transition_failed": "#e67e22"
   }
 }
 ```
@@ -152,6 +152,7 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
     "reviewStatus": "In Review",         // when the ticket's session hands off its PR; "" = don't
     "mergedStatus": "Done",              // when that PR is merged; "" = don't
     "closedStatus": "In Progress",       // when that PR is closed without merging; "" = don't
+    "finalStatuses": ["Done", "CANCELED"],  // a tracked ticket in one of these is marked done
     "promptTemplate": "… {{key}} … {{url}} … {{summary}} … {{description}} … {{cwd}} … {{modeInstructions}} …"
   }
 }

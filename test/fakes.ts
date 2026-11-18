@@ -175,7 +175,13 @@ export class FakeJira implements JiraClient {
   async search(jql: string) {
     this.searches.push(jql);
     if (this.failSearch) throw this.failSearch;
-    return structuredClone(this.tickets);
+    // Honours the two JQL shapes Sentinel sends: `key IN (...)` and `... status IN (...) ...`.
+    const list = (m: RegExpExecArray | null) => (m ? [...m[1]!.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((x) => x[1]!.toLowerCase()) : null);
+    const keys = list(/^key IN \(([^)]*)\)/.exec(jql));
+    const statuses = list(/status IN \(([^)]*)\)/.exec(jql));
+    return structuredClone(
+      this.tickets.filter((t) => (keys ? keys.includes(t.key.toLowerCase()) : !statuses || statuses.includes(t.status.toLowerCase()))),
+    );
   }
   async transition(key: string, status: string) {
     if (this.failTransition) throw this.failTransition;
