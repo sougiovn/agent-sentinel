@@ -1,7 +1,7 @@
 import type { EventRow, HumanCommentRow, PrRow, SessionRow, TicketRow } from "../core/types.ts";
 import type { WatchRequest, WatchResult } from "./sentinel.ts";
 import type { HookSignal } from "../spawn/launcher.ts";
-import type { GoToAgentResult } from "../spawn/dispatcher.ts";
+import type { GoToAgentResult, OpenCommandResult } from "../spawn/dispatcher.ts";
 
 export interface StatusInfo {
   pid: number;
@@ -10,6 +10,10 @@ export interface StatusInfo {
   multiplexer: string;
   pollIntervalSec: number;
   nextPollAt: number | null;
+  /** A full poll (scheduled or manual) is running; a manual refresh is refused until it ends. */
+  pollInProgress?: boolean;
+  /** When the manual-refresh cooldown ends; null before the first manual refresh. Missing on older daemons. */
+  manualRefreshReadyAt?: number | null;
   prs: number;
   configError: string | null;
   jira: {
@@ -131,6 +135,9 @@ export interface RefreshResult {
   nextPollAt: number | null;
 }
 
+/** What `openTool` opens in a new multiplexer tab. */
+export type OpenTool = "dashboard" | "settings";
+
 /** method name → [params, result] */
 export interface RpcMethods {
   status: [Record<string, never>, StatusInfo];
@@ -155,6 +162,7 @@ export interface RpcMethods {
   pause: [{ sessionId: string; paused: boolean }, { ok: true }];
   goToAgent: [{ sessionId: string }, GoToAgentResult];
   reload: [Record<string, never>, { ok: boolean; error: string | null }];
+  openTool: [{ tool: OpenTool }, OpenCommandResult];
   stop: [Record<string, never>, { ok: true }];
 }
 

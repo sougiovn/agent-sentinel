@@ -16,6 +16,7 @@ export const COMMANDS = [
   "stop",
   "restart",
   "skill",
+  "swiftbar",
   "notify",
   "completion",
   "daemon",
@@ -25,6 +26,7 @@ export const COMMANDS = [
 const SUBCOMMANDS: Record<string, readonly string[]> = {
   tickets: ["check", "dismiss"],
   skill: ["show", "install"],
+  swiftbar: ["install"],
   notify: ["test"],
   completion: ["bash"],
 };
@@ -37,6 +39,7 @@ const OPTIONS: Record<string, readonly string[]> = {
   status: ["--json"],
   tickets: ["--json"],
   daemon: ["--quiet"],
+  swiftbar: ["--force"],
 };
 
 const AGENTS = ["claude", "codex"] as const;
@@ -103,6 +106,9 @@ export async function complete(words: readonly string[], source: CompletionSourc
       return consumed.length === 1 ? { items: match(SUBCOMMANDS.skill!, current) } : { items: [] };
     case "notify":
       return consumed.length === 1 ? { items: match(SUBCOMMANDS.notify!, current) } : { items: [] };
+    case "swiftbar":
+      if (consumed.length === 1) return { items: match(SUBCOMMANDS.swiftbar!, current) };
+      return consumed[1] === "install" ? { items: [], dirs: true } : { items: [] };
     case "completion":
       return consumed.length === 1 ? { items: match(SUBCOMMANDS.completion!, current) } : { items: [] };
     default:
@@ -114,6 +120,7 @@ export async function complete(words: readonly string[], source: CompletionSourc
 function optionsFor(consumed: readonly string[]): readonly string[] {
   const command = consumed[0];
   if (command === "tickets" && consumed.length > 1) return [];
+  if (command === "swiftbar" && consumed[1] !== "install") return [];
   return OPTIONS[command!] ?? [];
 }
 

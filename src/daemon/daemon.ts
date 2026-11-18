@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, defaultConfig, watchConfig, type Config } from "../core/config.ts";
 import { Store } from "../core/db.ts";
@@ -12,8 +13,9 @@ import { GhCli, type GhClient } from "../github/gh.ts";
 import { HerdrMux } from "../mux/herdr.ts";
 import type { Multiplexer } from "../mux/mux.ts";
 import { RexMux } from "../mux/rex.ts";
-import { Dispatcher } from "../spawn/dispatcher.ts";
-import type { RefreshResult, RepoView, RpcMethod, RpcMethods, RpcRequest, RpcResponse, StatusInfo } from "./protocol.ts";
+import { Dispatcher, type OpenCommandResult } from "../spawn/dispatcher.ts";
+import { sq } from "../spawn/launcher.ts";
+import type { OpenTool, RefreshResult, RepoView, RpcMethod, RpcMethods, RpcRequest, RpcResponse, StatusInfo } from "./protocol.ts";
 import { Sentinel } from "./sentinel.ts";
 import { TicketWatcher } from "./tickets.ts";
 import { AcliJira, type JiraClient } from "../jira/acli.ts";
@@ -271,6 +273,25 @@ export class Daemon {
     }
   }
 
+  /**
+   * Opens the dashboard, or config.json in the user's editor followed by a reload, in a new tab of
+   * Sentinel's home session. The command runs in the pane's login shell, so $VISUAL/$EDITOR are the user's.
+   */
+  async openTool(tool: OpenTool): Promise<OpenCommandResult> {
+    const self = `SENTINEL_HOME=${sq(this.paths.home)} ${selfCommand().map(sq).join(" ")}`;
+    const home = homedir();
+    if (tool === "dashboard") return this.dispatcher.openCommand({ label: "sentinel-dashboard", cwd: home, command: `${self} tui` });
+    if (tool === "settings") {
+      const editor = '"${VISUAL:-${EDITOR:-vi}}"';
+      return this.dispatcher.openCommand({
+        label: "sentinel-settings",
+        cwd: home,
+        command: `${editor} ${sq(this.paths.config)} && ${self} reload`,
+      });
+    }
+    throw new Error(`Unknown tool "${String(tool)}"`);
+  }
+
   status(): StatusInfo {
     return {
       pid: process.pid,
@@ -279,6 +300,8 @@ export class Daemon {
       multiplexer: this.config.multiplexer,
       pollIntervalSec: this.config.pollIntervalSec,
       nextPollAt: this.nextPollAt,
+      pollInProgress: this.pollInProgress,
+      manualRefreshReadyAt: this.lastManualRefreshAt === null ? null : this.lastManualRefreshAt + MANUAL_REFRESH_COOLDOWN_MS,
       prs: this.store.listPrs().length,
       configError: this.configError,
       jira: {
@@ -391,6 +414,8 @@ export class Daemon {
         return (await this.dispatcher.goToAgent((p as RpcMethods["goToAgent"][0]).sessionId)) as R;
       case "reload":
         return this.reload() as R;
+      case "openTool":
+        return (await this.openTool((p as RpcMethods["openTool"][0]).tool)) as R;
       case "stop":
         setTimeout(() => this.stop(), 50);
         return { ok: true } as R;

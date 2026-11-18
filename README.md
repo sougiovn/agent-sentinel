@@ -60,6 +60,14 @@ Completion covers commands, options, the PRs Sentinel is already watching (`watc
 
 The daemon sends macOS notifications when an agent hands off a PR, a Jira ticket is picked up, moved or finished, and when a poll finds a merge conflict, feedback for the agent or new human comments. Install `terminal-notifier` (`brew install terminal-notifier`) so clicking one opens its PR or ticket. Without it, Sentinel uses `osascript`, whose notifications appear only once Script Editor is allowed in System Settings → Notifications. Check with `sentinel notify test`. Each event can be turned off under `notifications` in the config.
 
+### SwiftBar menu bar plugin
+
+```sh
+sentinel swiftbar install ~/swiftbar-plugins   # writes ~/swiftbar-plugins/sentinel.30s.sh
+```
+
+The path is SwiftBar's plugin folder (the file is named `sentinel.30s.sh`, so the menu refreshes every 30s) or a `.sh` file. The menu lists agent sessions by repo with their PRs and Jira tickets. Click a session to go to its agent in Rex or herdr, a PR or ticket to open it in the browser. It also has Refresh now (with the dashboard's 30s cooldown), Open dashboard and Edit settings (`$EDITOR` on `config.json`, then a reload), which open in a new tab of Sentinel's Rex session or herdr workspace. The plugin keeps the `PATH` of the shell you installed it from. Rerun the command after moving Sentinel or changing `PATH`.
+
 ### TUI keys
 
 `↑/↓` select · `/` filter by repo or title · `enter` PR details (human comments and event history) · `o` open in browser · `n` watch one of your PRs · `g` repos and worktrees · `c` check now · `r` refresh all PRs now · `d` unwatch · `p` pause/resume the session's deliveries · `A` go to the agent (focus its pane, or reopen it in a new tab) · `t` switch to the Jira tickets list (`o` open, `A` go to agent, `d` dismiss) · `v` try the sessions view (every session grouped by repo, with its PRs and tickets under it; `enter` expands a session's details with its evaluator spend and history) · `s` settings · `R` reload config and theme · `S` retry starting the daemon · `?` list every shortcut for the current screen (`/` filters it) · `q` quit. The footer shows as many shortcuts as fit and always ends with `? help`; `?` works everywhere, even while typing in a filter. A manual refresh resets the poll countdown; it is refused while another poll is running and for 30 seconds after the previous one. The daemon keeps running after you quit the dashboard; stop it with `sentinel stop`, or run `sentinel restart` after upgrading Sentinel.

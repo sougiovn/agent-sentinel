@@ -398,7 +398,9 @@ describe("manual refresh", () => {
     const t = makeDaemon({ now: () => clock });
     t.gh.add(ref);
     await t.daemon.handle("watch", { prs: [PR], agent: "claude", sessionId: "s", cwd: "/r" });
+    expect(t.daemon.status().manualRefreshReadyAt).toBeNull();
     expect((await t.daemon.handle("refresh", {})).accepted).toBe(true);
+    expect(t.daemon.status().manualRefreshReadyAt).toBe(clock + 30_000);
 
     t.gh.comment(ref, { id: 101 });
     clock += 29_000;
@@ -433,6 +435,7 @@ describe("manual refresh", () => {
 
     const first = t.daemon.handle("refresh", {});
     await Bun.sleep(0);
+    expect(t.daemon.status().pollInProgress).toBe(true);
     const second = await t.daemon.handle("refresh", {});
     expect(second.accepted).toBe(false);
     expect(second.error).toContain("in progress");
@@ -442,6 +445,7 @@ describe("manual refresh", () => {
     const done = await first;
     expect(done.accepted).toBe(true);
     expect(done.checked).toEqual([ID]);
+    expect(t.daemon.status().pollInProgress).toBe(false);
   });
 });
 

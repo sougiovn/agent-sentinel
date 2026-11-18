@@ -36,6 +36,8 @@ Usage:
   sentinel completion bash      Print a bash completion script
   sentinel skill show|install   Print or install the agent skill
   sentinel notify test           Send a test notification (checks they reach you)
+  sentinel swiftbar install <path> [--force]
+                                Write a SwiftBar menu bar plugin (<path>: plugin folder or .sh file)
   sentinel daemon               Run the daemon in the foreground
 
 PRs: URL or owner/repo#123. Data lives in ~/.config/sentinel (override with SENTINEL_HOME).`;
@@ -245,6 +247,11 @@ async function main(argv: string[]) {
       });
       console.log(`Sent a test notification (method: ${method}). If none showed up, see "Notifications" in docs/features.md.`);
       if (loaded.ok && !loaded.config.notifications.enabled) console.log("Note: notifications.enabled is false, so the daemon sends none.");
+      return;
+    }
+    case "swiftbar": {
+      const { runSwiftbar } = await import("../swiftbar/cli.ts");
+      await runSwiftbar(rest, paths, client);
       return;
     }
     case "skill": {

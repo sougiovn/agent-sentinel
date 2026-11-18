@@ -30,6 +30,13 @@ export interface GoToAgentResult {
   warning?: string;
 }
 
+export interface OpenCommandResult {
+  paneId: string;
+  tabId: string;
+  /** Set when the tab opened but couldn't be fully brought to the front. */
+  warning?: string;
+}
+
 export interface DeliverHooks {
   onDelivered: (paneId: string, promptFile: string, now: number) => void;
   onFailed: (msg: string, now: number) => void;
@@ -266,7 +273,8 @@ export class Dispatcher {
   }
 
   /** Creates a pane for the session in Sentinel's home session/workspace and records it on the session. */
-  private async openPane(mux: Multiplexer, session: SessionRow, extra: { ownTab?: boolean; focus?: boolean } = {}) {
+  /** Creates a shell pane in Sentinel's home session/workspace and waits for its prompt. */
+  private async createHomePane(mux: Multiplexer, opts: { cwd: string; label: string; ownTab?: boolean; focus?: boolean }) {
     const { store } = this.d;
     const cfg = this.d.config();
     const homeKey = `mux_home:${mux.name}:${cfg.spawn.sessionName}`;
@@ -275,16 +283,30 @@ export class Dispatcher {
       homeId: store.getMeta(homeKey) ?? undefined,
       layout: cfg.spawn.layout,
       maxPanesPerTab: cfg.spawn.maxPanesPerTab,
-      cwd: session.cwd,
-      label: this.paneLabel(session),
-      ...extra,
+      ...opts,
     });
     store.setMeta(homeKey, ref.homeId);
-    store.updateSession(session.session_id, { mux: mux.name, pane_id: ref.paneId, tab_id: ref.tabId });
     if (!(await waitForShell(mux, ref.paneId, { sleep: this.d.sleep }))) {
-      this.d.log(`session ${session.session_id}: pane ${ref.paneId} showed no shell prompt; typing anyway`);
+      this.d.log(`pane ${ref.paneId} (${opts.label}) showed no shell prompt; typing anyway`);
     }
     return ref;
+  }
+
+  private async openPane(mux: Multiplexer, session: SessionRow, extra: { ownTab?: boolean; focus?: boolean } = {}) {
+    const ref = await this.createHomePane(mux, { cwd: session.cwd, label: this.paneLabel(session), ...extra });
+    this.d.store.updateSession(session.session_id, { mux: mux.name, pane_id: ref.paneId, tab_id: ref.tabId });
+    return ref;
+  }
+
+  /** Runs a shell command in a new, focused tab of Sentinel's home session (the dashboard, an editor). */
+  async openCommand(opts: { label: string; cwd: string; command: string }): Promise<OpenCommandResult> {
+    const mux = this.d.mux();
+    await mux.ensureAvailable();
+    const ref = await this.createHomePane(mux, { cwd: opts.cwd, label: opts.label, ownTab: true, focus: true });
+    await mux.sendLine(ref.paneId, opts.command);
+    const warning = await mux.focusPane(ref);
+    this.d.log(`opened ${opts.label} in pane ${ref.paneId}`);
+    return { paneId: ref.paneId, tabId: ref.tabId, ...(warning ? { warning } : {}) };
   }
 
   /**
