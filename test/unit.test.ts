@@ -104,6 +104,7 @@ describe("theme", () => {
   });
   test("status colours fall back to the text colour", () => {
     expect(statusColor(DEFAULT_THEME, "in_review")).toBe("#2ecc71");
+    expect(statusColor(DEFAULT_THEME, "done")).toBe("#27ae60");
     expect(statusColor(DEFAULT_THEME, "unknown")).toBe(DEFAULT_THEME.text);
     expect(statusColor({ ...DEFAULT_THEME, statuses: {} }, "in_review")).toBe(DEFAULT_THEME.text);
   });
