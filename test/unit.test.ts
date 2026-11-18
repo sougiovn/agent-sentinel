@@ -27,7 +27,7 @@ import { linkWorktrees, listRepos, namesTicket, parseWorktreeList } from "../src
 import { filterRepos, tilde } from "../src/tui/repo-labels.ts";
 import { filterHints, fitHints } from "../src/tui/shortcuts.ts";
 import type { MyPr } from "../src/daemon/protocol.ts";
-import { filterPrs, filterWatched } from "../src/tui/pr-filter.ts";
+import { filterPrs } from "../src/tui/pr-filter.ts";
 
 describe("pr-ref", () => {
   test("parses URLs and short forms", () => {
@@ -582,23 +582,6 @@ describe("pr grouping", () => {
       "github.com/Acme/billing#3",
       "github.com/zeta/web#9",
     ]);
-  });
-});
-
-describe("watched PR filter", () => {
-  const prs = [
-    { id: "github.com/acme/web#1", title: "Fix login" },
-    { id: "github.com/acme/api#2", title: "Rate limits" },
-    { id: "github.com/zeta/tools#3", title: null },
-  ];
-  const ids = (q: string) => filterWatched(prs, q).map((p) => p.id.split("#")[1]);
-  test("matches org/repo and title, not the number", () => {
-    expect(ids("")).toEqual(["1", "2", "3"]);
-    expect(ids("ACME")).toEqual(["1", "2"]);
-    expect(ids("acme/api")).toEqual(["2"]);
-    expect(ids("acme login")).toEqual(["1"]);
-    expect(ids("tools")).toEqual(["3"]);
-    expect(ids("3")).toEqual([]);
   });
 });
 

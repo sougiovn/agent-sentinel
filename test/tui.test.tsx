@@ -166,8 +166,9 @@ test("TUI picks one of my PRs, fills the form and starts a new-session watch", a
   t.mockInput.pressEnter();
   await Bun.sleep(300);
   f = await frame();
-  expect(f).toContain("Watched PRs");
-  expect(f).toMatch(/acme\/web[^\n]*\n[^\n]*#1 - Fix login redirect/);
+  expect(f).toContain("Sessions · 1");
+  expect(f).toMatch(/acme\/web[\s\S]*#1 - Fix login redirect/);
+  expect(f).toContain("https://github.com/acme/web/pull/1 · session"); // the new PR is selected
 
   const pr = t0.store.getPr("github.com/acme/web#1")!;
   expect(pr.cwd).toBe(clone);
@@ -212,11 +213,11 @@ test("TUI settings dialog filters fields with /", async () => {
   t.renderer.destroy();
 });
 
-test("TUI filters watched PRs by repo or title with /", async () => {
+test("TUI filters sessions by repo or title with /", async () => {
   const d = makeDaemon();
-  for (const [r, title] of [["acme/web#1", "Fix login redirect"], ["acme/api#2", "Add rate limits"], ["zeta/tools#3", "Bump deps"]] as const) {
+  for (const [r, title, s] of [["acme/web#1", "Fix login redirect", "s1"], ["acme/api#2", "Add rate limits", "s2"], ["zeta/tools#3", "Bump deps", "s3"]] as const) {
     d.gh.add(parsePrRef(r), { title });
-    await d.daemon.handle("watch", { prs: [r], agent: "claude", sessionId: "s1", cwd: "/r" });
+    await d.daemon.handle("watch", { prs: [r], agent: "claude", sessionId: s, cwd: "/r" });
   }
   const client: RpcClient = { call: (m, p) => d.daemon.handle(m, p) };
   const t = await testRender(() => <App paths={d.paths} autoStart={false} client={client} />, { width: 120, height: 24 });
@@ -237,6 +238,7 @@ test("TUI filters watched PRs by repo or title with /", async () => {
   for (let i = 0; i < 9; i++) t.mockInput.pressBackspace();
   await t.mockInput.typeText("zeta");
   t.mockInput.pressEnter(); // keep the filter, back to the list
+  t.mockInput.pressArrow("down"); // the session's PR
   f = await frame();
   expect(f).toContain("#3 - Bump deps");
   expect(f).not.toContain("acme/api");
@@ -292,7 +294,8 @@ test("TUI opens the selected PR in the browser with o", async () => {
     { width: 120, height: 24 },
   );
   await Bun.sleep(100);
-  t.mockInput.pressArrow("down");
+  t.mockInput.pressArrow("down"); // #1, under the session line
+  t.mockInput.pressArrow("down"); // #2
   t.mockInput.pressKey("o");
   await Bun.sleep(50);
   expect(opened).toEqual(["https://github.com/acme/web/pull/2"]);
@@ -386,6 +389,7 @@ test("TUI goes to the selected PR's or ticket's agent with A", async () => {
     return t.captureCharFrame();
   };
   expect(await frame()).toContain("A go to agent");
+  t.mockInput.pressArrow("down"); // the PR under session s1
 
   t.mockInput.pressKey("a"); // lowercase does nothing
   await frame();
@@ -395,7 +399,8 @@ test("TUI goes to the selected PR's or ticket's agent with A", async () => {
   expect(await frame()).toContain("Reopened github.com/acme/web#1's agent");
   expect(t0.mux.focused.at(-1)!.paneId).toBe(t0.store.getSession("s1")!.pane_id!);
 
-  t.mockInput.pressKey("t");
+  t.mockInput.pressArrow("down"); // the ticket's session
+  t.mockInput.pressArrow("down"); // the ticket
   await frame();
   t.mockInput.pressKey("a", { shift: true });
   expect(await frame()).toContain("Went to CP-7's agent");
@@ -421,11 +426,11 @@ test("TUI shows picked-up Jira tickets and dismisses one", async () => {
     return t.captureCharFrame();
   };
   let f = await frame();
-  expect(f).toContain('Jira tickets · label "sentinel"');
+  expect(f).toContain("No PR yet");
   expect(f).toContain("CP-7 - Add audit log");
   expect(f).toContain("started");
 
-  t.mockInput.pressKey("t");
+  t.mockInput.pressArrow("down"); // the ticket, under its session
   f = await frame();
   expect(f).toContain("o open ticket");
   expect(f).toContain("https://acme.atlassian.net/browse/CP-7");
@@ -500,7 +505,7 @@ test("TUI repos view lists worktrees with their watched PR and Jira ticket", asy
   expect(ff).toContain("main checkout");
 
   t.mockInput.pressEscape();
-  expect(await frame()).toContain("Watched PRs");
+  expect(await frame()).toContain("Sessions · 2");
   t.renderer.destroy();
 });
 
@@ -618,13 +623,13 @@ test("TUI footer keeps ? help visible, truncates the rest, and ? lists every sho
 
   t.mockInput.pressKey("?");
   f = await frame();
-  expect(f).toContain("Shortcuts · Watched PRs");
+  expect(f).toContain("Shortcuts · Sessions");
   expect(f).toContain("watch a PR");
   expect(f).toContain("reload config");
   expect(f).toContain("quit (works everywhere)");
   t.mockInput.pressKey("s"); // ignored while the dialog is open
   f = await frame();
-  expect(f).toContain("Shortcuts · Watched PRs");
+  expect(f).toContain("Shortcuts · Sessions");
   t.mockInput.pressEscape();
   f = await frame();
   expect(f).not.toContain("Shortcuts ·");
@@ -635,8 +640,8 @@ test("TUI footer keeps ? help visible, truncates the rest, and ? lists every sho
   await frame();
   await t.mockInput.typeText("?");
   f = await frame();
-  expect(f).toContain("Shortcuts · Watched PRs · filter");
-  expect(f).toContain("to filter by repo or title");
+  expect(f).toContain("Shortcuts · Sessions · filter");
+  expect(f).toContain("to filter by session, repo, PR");
   t.mockInput.pressKey("?");
   f = await frame();
   expect(f).not.toContain("Shortcuts ·");
@@ -673,7 +678,7 @@ test("TUI shortcuts dialog filters with / and leaves a filter underneath focused
   await frame();
   t.mockInput.pressEscape(); // clear the filter
   f = await frame();
-  expect(f).toContain("Shortcuts · Watched PRs");
+  expect(f).toContain("Shortcuts · Sessions");
   expect(f).toContain("reload config");
   t.mockInput.pressEscape(); // close
   f = await frame();
@@ -714,10 +719,11 @@ test("TUI ? works on every screen: settings, a value being edited, a pending con
   await frame();
 
   // A pending unwatch is cancelled by ?, and the PR stays watched.
+  t.mockInput.pressArrow("down"); // the PR under its session
   t.mockInput.pressKey("d");
   expect(footer(await frame())).toMatch(/Unwatch github\.com\/acme\/web#1\?.*\? help\s*$/);
   t.mockInput.pressKey("?");
-  expect(await frame()).toContain("Shortcuts · Watched PRs");
+  expect(await frame()).toContain("Shortcuts · Sessions");
   t.mockInput.pressEscape();
   let f = await frame();
   expect(footer(f)).not.toContain("Unwatch");
@@ -803,7 +809,8 @@ test("TUI shows open human comments, their drafts, copies the reply and marks on
   expect(f).toContain("2 human comment(s) need you");
   expect(f).toContain("2 open");
 
-  t.mockInput.pressEnter();
+  t.mockInput.pressArrow("down"); // the PR under its session
+  t.mockInput.pressKey("h");
   f = await frame();
   expect(f).toContain("Human comments · 2 open");
   expect(f).toContain("draft ready");
@@ -846,7 +853,8 @@ test("TUI won't reopen a thread resolved on GitHub, and says when there's no rep
     return t.captureCharFrame();
   };
   expect(await frame()).not.toContain("need you");
-  t.mockInput.pressEnter();
+  t.mockInput.pressArrow("down");
+  t.mockInput.pressKey("h");
   let f = await frame();
   expect(f).toContain("Human comments · 0 open");
   expect(f).toContain("✓ resolved");
@@ -882,7 +890,8 @@ test("TUI shows a PR's merge state and a conflict banner in its details", async 
   expect(row("Conflicting")).toContain("conflict");
   expect(row("Clean")).toContain(" ok ");
 
-  t.mockInput.pressEnter(); // details of the first PR
+  t.mockInput.pressArrow("down"); // the first PR
+  t.mockInput.pressKey("h"); // its details
   f = await frame();
   expect(f).toContain("Merge conflict with `develop`");
 
@@ -890,13 +899,13 @@ test("TUI shows a PR's merge state and a conflict banner in its details", async 
   await frame();
   t.mockInput.pressArrow("down");
   await frame();
-  t.mockInput.pressEnter();
+  t.mockInput.pressKey("h");
   f = await frame();
   expect(f).not.toContain("Merge conflict with");
   t.renderer.destroy();
 });
 
-test("TUI sessions view (v): sessions by repo with their PRs and tickets, and actions on each line", async () => {
+test("TUI sessions view: sessions by repo with their PRs and tickets, and actions on each line", async () => {
   const d = makeDaemon();
   const cfg = defaultConfig();
   cfg.jira.enabled = true;
@@ -918,12 +927,8 @@ test("TUI sessions view (v): sessions by repo with their PRs and tickets, and ac
     await t.renderOnce();
     return t.captureCharFrame();
   };
-  expect(await frame()).toContain("Watched PRs");
-
-  t.mockInput.pressKey("v");
   let f = await frame();
   expect(f).toContain("Sessions · 3");
-  expect(f).not.toContain("Watched PRs");
   expect(f).not.toContain("Jira tickets ·");
   const at = (text: string) => f.indexOf(text);
   expect(at("acme/web\n") < at("● s1")).toBe(true);
@@ -992,7 +997,8 @@ test("TUI sessions view (v): sessions by repo with their PRs and tickets, and ac
   expect(d.store.getTicket("CP-9")!.session_id).toBe(ticketSession);
 
   t.mockInput.pressEscape(); // clear the filter
-  t.mockInput.pressKey("v");
-  expect(await frame()).toContain("Watched PRs");
+  expect(await frame()).toContain("Fix login redirect");
+  t.mockInput.pressKey("v"); // no longer switches views
+  expect(await frame()).toContain("Sessions · 3");
   t.renderer.destroy();
 });

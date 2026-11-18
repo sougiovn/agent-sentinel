@@ -27,7 +27,7 @@ import {
   type SessionLine,
 } from "./sessions.ts";
 import { cycleField, displayField, FORM_FIELDS, initialForm, watchRequest, type NewWatchForm } from "./new-watch.ts";
-import { filterPrs, filterWatched } from "./pr-filter.ts";
+import { filterPrs } from "./pr-filter.ts";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { filterRepos, repoLabel, tilde, worktreeLabel } from "./repo-labels.ts";
 import { filterHints, fitHints, HELP_HINT, hintText, type Hint } from "./shortcuts.ts";
@@ -42,7 +42,6 @@ export interface RpcClient {
 }
 
 /** Most Jira ticket rows shown before the list scrolls. */
-const TICKET_ROWS = 6;
 
 /** Most human comment rows shown in the PR details before the list scrolls. */
 const HUMAN_ROWS = 6;
@@ -100,19 +99,11 @@ export function App(props: AppProps) {
   const [prs, setPrs] = createSignal<PrListEntry[]>([]);
   const [status, setStatus] = createSignal<StatusInfo | null>(null);
   const [online, setOnline] = createSignal(true);
-  const [sel, setSel] = createSignal(0);
   const [listQuery, setListQuery] = createSignal("");
-  /** The watched-PR filter input has focus. */
+  /** The sessions filter input has focus. */
   const [listFiltering, setListFiltering] = createSignal(false);
-  /** Watched PRs after the `/` filter; `sel` indexes this list. */
-  const shownPrs = () => filterWatched(prs(), listQuery());
   const [tickets, setTickets] = createSignal<TicketListEntry[]>([]);
-  /** The Jira tickets list has the selection instead of the PR list. */
-  const [ticketFocus, setTicketFocus] = createSignal(false);
-  const [ticketSel, setTicketSel] = createSignal(0);
   const [confirmDismiss, setConfirmDismiss] = createSignal(false);
-  /** The main page shows sessions (with their PRs and tickets) instead of the PR and ticket lists. */
-  const [sessionMode, setSessionMode] = createSignal(false);
   /** Key of the selected line in the sessions view; kept across refreshes. */
   const [lineKey, setLineKey] = createSignal<string | null>(null);
   const shownGroups = () => filterSessionGroups(buildSessionGroups(prs(), tickets()), listQuery());
@@ -124,20 +115,19 @@ export function App(props: AppProps) {
     setLineKey(ls[Math.min(ls.length - 1, Math.max(0, lineIndex() + d))]?.key ?? null);
   };
   const currentTicket = () => {
-    if (!sessionMode()) return ticketFocus() ? tickets()[ticketSel()] : undefined;
     const l = currentLine();
     return l?.kind === "ticket" ? l.ticket : undefined;
   };
   /** The session whose own line is selected in the sessions view. */
   const selectedSession = () => {
     const l = currentLine();
-    return sessionMode() && l?.kind === "session" ? l.entry : undefined;
+    return l?.kind === "session" ? l.entry : undefined;
   };
   /** The sessions view's details pane is expanded to half the page (enter toggles it). */
   const [sessionDetails, setSessionDetails] = createSignal(false);
   /** Events of every PR of the session shown in the expanded details pane, by PR id. */
   const [sessionEvents, setSessionEvents] = createSignal<Record<string, EventRow[]>>({});
-  const detailsOpen = () => sessionMode() && sessionDetails() && !!currentLine();
+  const detailsOpen = () => sessionDetails() && !!currentLine();
   /** The PRs whose events the details pane loads; a string so moving inside one session doesn't reload. */
   const detailsPrKey = createMemo(() => (detailsOpen() ? currentLine()!.entry.prs.map((p) => p.id).join(" ") : ""));
   const loadSessionEvents = async (ids: string[]) => {
@@ -158,8 +148,7 @@ export function App(props: AppProps) {
     return mergeHistory(Object.fromEntries(Object.entries(all).filter(([id]) => ids.has(id))));
   };
   /** A ticket has the selection, so the ticket keys apply. */
-  const ticketActive = () => (sessionMode() ? currentLine()?.kind === "ticket" : ticketFocus());
-  const showTickets = () => !!status()?.jira?.enabled || tickets().length > 0;
+  const ticketActive = () => currentLine()?.kind === "ticket";
   const [history, setHistory] = createSignal<EventRow[]>([]);
   /** Human comments of the PR whose details are open; open ones first. */
   const [humans, setHumans] = createSignal<HumanCommentRow[]>([]);
@@ -228,7 +217,7 @@ export function App(props: AppProps) {
   let detailsScroll: ScrollBoxRenderable | undefined;
   createEffect(() => {
     const i = lineIndex();
-    if (view() === "list" && sessionMode()) sessionScroll?.scrollChildIntoView(`sess-line-${i}`, { align: "nearest" });
+    if (view() === "list") sessionScroll?.scrollChildIntoView(`sess-line-${i}`, { align: "nearest" });
   });
   createEffect(() => {
     const i = repoSel();
@@ -275,25 +264,14 @@ export function App(props: AppProps) {
     try {
       const [st, list] = await Promise.all([client.call("status", {}, 3000), client.call("list", {}, 3000)]);
       setStatus(st);
-      // Keep the same PR selected when the order changes.
-      const selectedId = shownPrs()[sel()]?.id;
       const detailsId = current()?.id;
       setPrs(sortByGroup(list));
       setOnline(true);
       // An older daemon has no ticket support; treat that as no tickets.
       const ts = await client.call("tickets", {}, 3000).catch(() => [] as TicketListEntry[]);
-      const selectedKey = tickets()[ticketSel()]?.key;
       setTickets(ts);
-      const keptTicket = selectedKey ? ts.findIndex((t) => t.key === selectedKey) : -1;
-      if (keptTicket >= 0) setTicketSel(keptTicket);
-      else if (ticketSel() >= ts.length) setTicketSel(Math.max(0, ts.length - 1));
-      if (ts.length === 0) setTicketFocus(false);
       if (view() === "history" && detailsId) await loadDetails(detailsId).catch(() => {});
       if (detailsPrKey()) await loadSessionEvents(detailsPrKey().split(" "));
-      const shown = shownPrs();
-      const kept = selectedId ? shown.findIndex((p) => p.id === selectedId) : -1;
-      if (kept >= 0) setSel(kept);
-      else if (sel() >= shown.length) setSel(Math.max(0, shown.length - 1));
     } catch {
       setOnline(false);
     }
@@ -383,7 +361,6 @@ export function App(props: AppProps) {
   onCleanup(() => clearInterval(interval));
 
   const current = () => {
-    if (!sessionMode()) return shownPrs()[sel()];
     const l = currentLine();
     return l?.kind === "pr" ? l.pr : undefined;
   };
@@ -573,8 +550,7 @@ export function App(props: AppProps) {
       setView("list");
       await refresh();
       setListQuery("");
-      const i = shownPrs().findIndex((x) => x.id === r.id);
-      if (i >= 0) setSel(i);
+      setLineKey(`p:${r.id}`);
     } catch (e) {
       setFormMsg({ text: (e as Error).message, error: true });
     } finally {
@@ -694,14 +670,12 @@ export function App(props: AppProps) {
     }
     if (v === "list") {
       if (listFiltering()) {
-        const last = shownPrs().length - 1;
         if (key.name === "escape") {
           setListQuery("");
           setListFiltering(false);
-          setSel(0);
         } else if (key.name === "return") setListFiltering(false);
-        else if (key.name === "up") sessionMode() ? moveLine(-1) : setSel((i) => Math.max(0, i - 1));
-        else if (key.name === "down") sessionMode() ? moveLine(1) : setSel((i) => Math.min(last, i + 1));
+        else if (key.name === "up") moveLine(-1);
+        else if (key.name === "down") moveLine(1);
         return; // everything else goes to the filter input
       }
       if (!confirmDelete() && (key.name === "/" || key.sequence === "/")) {
@@ -715,13 +689,6 @@ export function App(props: AppProps) {
       }
       if (!confirmDelete() && key.name === "escape" && listQuery()) {
         setListQuery("");
-        setSel(0);
-        return;
-      }
-      if (!confirmDelete() && !confirmDismiss() && key.name === "v") {
-        setSessionMode((m) => !m);
-        setTicketFocus(false);
-        notify(sessionMode() ? "Showing sessions (v for PRs and tickets)" : "Showing PRs and tickets (v for sessions)");
         return;
       }
       if (confirmDismiss()) {
@@ -734,11 +701,7 @@ export function App(props: AppProps) {
         }
         return;
       }
-      if (key.name === "t" && !confirmDelete() && sessionMode()) {
-        notify("Tickets are listed under their sessions here; v switches back to the ticket list");
-        return;
-      }
-      if (sessionMode() && !confirmDelete()) {
+      if (!confirmDelete()) {
         const l = currentLine();
         if (detailsOpen() && key.shift && (key.name === "j" || key.name === "k")) {
           detailsScroll?.scrollBy(key.name === "k" ? -1 : 1);
@@ -794,26 +757,9 @@ export function App(props: AppProps) {
           }
         }
       }
-      if (key.name === "t" && !confirmDelete()) {
-        if (tickets().length === 0) notify(showTickets() ? "No Jira tickets picked up yet" : "Jira tickets are off (Tickets › Jira › Pick up tickets in settings)", true);
-        else setTicketFocus((f) => !f);
-        return;
-      }
       if (ticketActive() && !confirmDelete()) {
         const t = currentTicket();
         switch (key.name) {
-          case "escape":
-            setTicketFocus(false);
-            return;
-          case "up":
-          case "k":
-            setTicketSel((i) => Math.max(0, i - 1));
-            return;
-          case "down":
-          case "j":
-            setTicketSel((i) => Math.min(tickets().length - 1, i + 1));
-            return;
-          case "return":
           case "c":
             return;
           case "o":
@@ -854,17 +800,6 @@ export function App(props: AppProps) {
       switch (key.name) {
         case "q":
           renderer.destroy();
-          return;
-        case "up":
-        case "k":
-          setSel((i) => Math.max(0, i - 1));
-          return;
-        case "down":
-        case "j":
-          setSel((i) => Math.min(shownPrs().length - 1, i + 1));
-          return;
-        case "return":
-          await openHistory();
           return;
         case "s":
           if (key.shift) {
@@ -1333,7 +1268,7 @@ export function App(props: AppProps) {
     );
   };
 
-  /** The watch dialogs float over the PR list. */
+  /** The watch dialogs float over the sessions list. */
   const modalWidth = () => Math.max(40, Math.min(100, dims().width - 12));
   const pickerHeight = () => Math.max(8, Math.min(18, dims().height - 10));
 
@@ -1497,12 +1432,6 @@ export function App(props: AppProps) {
       "not sent": theme().warning,
     })[s];
 
-  const ticketWindow = () => {
-    const all = tickets();
-    const start = Math.max(0, Math.min(ticketSel() - TICKET_ROWS + 1, all.length - TICKET_ROWS));
-    return all.slice(start, start + TICKET_ROWS);
-  };
-
   /** The slice of filtered PRs that fits on screen, scrolled so the selection stays visible. */
   const pickWindow = () => {
     const rows = Math.max(1, pickerHeight() - 4); // border, filter line, count line
@@ -1591,79 +1520,40 @@ export function App(props: AppProps) {
             hint("esc", "back"),
           ],
         };
-      default:
+      default: {
         if (!online())
-          return { title: "Watched PRs", hints: [hint("S", "start daemon"), hint("R", "reload config"), hint("s", "settings"), hint("q", "quit")] };
-        if (sessionMode()) {
-          const l = currentLine();
-          const filterHints = listQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")];
-          if (listFiltering())
-            return { title: "Sessions · filter", hints: [hint("type", "to filter by session, repo, PR, ticket or status"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
-          const detailHints = detailsOpen()
-            ? [hint("enter/esc", "close details"), hint("J/K", "scroll history"), hint("h", "full history")]
-            : [hint("enter", "session details")];
-          const lineHints =
-            l?.kind === "pr"
-              ? [hint("o", "open PR"), hint("c", "check now"), hint("d", "unwatch")]
-              : l?.kind === "ticket"
-                ? [hint("o", "open ticket"), hint("d", "dismiss")]
-                : [];
-          return {
-            title: "Sessions",
-            hints: [
-              hint("↑↓", "move"),
-              ...detailHints,
-              ...lineHints,
-              hint("A", "go to agent"),
-              hint("p", "pause/resume"),
-              ...filterHints,
-              hint("n", "watch a PR"),
-              hint("v", "PRs & tickets view"),
-              hint("g", "repos"),
-              hint("r", "refresh all"),
-              hint("s", "settings"),
-              hint("R", "reload config"),
-              hint("q", "quit"),
-            ],
-          };
-        }
+          return { title: "Sessions", hints: [hint("S", "start daemon"), hint("R", "reload config"), hint("s", "settings"), hint("q", "quit")] };
+        const l = currentLine();
+        const filterHints = listQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")];
         if (listFiltering())
-          return { title: "Watched PRs · filter", hints: [hint("type", "to filter by repo or title"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
-        if (ticketFocus())
-          return {
-            title: "Jira tickets",
-            hints: [
-              hint("↑↓", "move"),
-              hint("o", "open ticket"),
-              hint("A", "go to agent"),
-              hint("d", "dismiss"),
-              hint("p", "pause/resume"),
-              hint("t/esc", "back to PRs"),
-              hint("r", "refresh all"),
-              hint("q", "quit"),
-            ],
-          };
+          return { title: "Sessions · filter", hints: [hint("type", "to filter by session, repo, PR, ticket or status"), hint("↑↓", "move"), hint("enter", "done"), hint("esc", "clear")] };
+        const detailHints = detailsOpen()
+          ? [hint("enter/esc", "close details"), hint("J/K", "scroll history"), hint("h", "full history")]
+          : [hint("enter", "session details")];
+        const lineHints =
+          l?.kind === "pr"
+            ? [hint("o", "open PR"), hint("c", "check now"), hint("d", "unwatch")]
+            : l?.kind === "ticket"
+              ? [hint("o", "open ticket"), hint("d", "dismiss")]
+              : [];
         return {
-          title: "Watched PRs",
+          title: "Sessions",
           hints: [
             hint("↑↓", "move"),
-            ...(listQuery() ? [hint("/", "change filter"), hint("esc", "clear filter")] : [hint("/", "filter")]),
-            hint("enter", "details & human comments"),
-            hint("o", "open"),
+            ...detailHints,
+            ...lineHints,
             hint("A", "go to agent"),
+            hint("p", "pause/resume"),
+            ...filterHints,
             hint("n", "watch a PR"),
             hint("g", "repos"),
-            hint("c", "check now"),
             hint("r", "refresh all"),
-            hint("d", "unwatch"),
-            hint("p", "pause/resume"),
-            ...(showTickets() ? [hint("t", "tickets")] : []),
-            hint("v", "sessions view"),
             hint("s", "settings"),
             hint("R", "reload config"),
             hint("q", "quit"),
           ],
         };
+      }
     }
   };
 
@@ -1725,97 +1615,7 @@ export function App(props: AppProps) {
 
       <Switch>
         <Match when={view() === "list" || view() === "pick-pr" || view() === "new-watch" || view() === "settings"}>
-          <Show when={!sessionMode()} fallback={sessionsView()}>
-          <box flexDirection="column" border title={humanTotal() > 0 ? ` Watched PRs · ${humanTotal()} human comment(s) need you ` : " Watched PRs "} marginTop={1} flexGrow={1} paddingLeft={1} paddingRight={1}>
-            <text fg={theme().textMuted} flexShrink={0}>
-              {pad("PR", widths().pr)} {pad("AGENT", widths().agent)} {pad("SESSION", widths().session)}{" "}
-              {pad("CHECKED", widths().checked)} {pad("HUMAN", widths().human)} {pad("MERGE", widths().merge)}{" "}
-              {pad("STATUS", widths().status)} REASON
-            </text>
-            <Show when={listFiltering() || listQuery() !== ""}>
-              <box flexDirection="row" height={1} flexShrink={0}>
-                <text fg={theme().accent}>/ </text>
-                <Show when={listFiltering()} fallback={<text>{listQuery()}</text>}>
-                  <input
-                    value={listQuery()}
-                    focused
-                    flexGrow={1}
-                    placeholder="filter by repo or title"
-                    onInput={(v) => {
-                      setListQuery(v);
-                      setSel(0);
-                    }}
-                  />
-                </Show>
-              </box>
-            </Show>
-            <Show when={prs().length > 0 && shownPrs().length === 0}>
-              <text fg={theme().textMuted}>No watched PRs match "{listQuery()}".</text>
-            </Show>
-            <Show when={prs().length > 0} fallback={<text fg={theme().textMuted}>No PRs watched. Press n to pick one of your PRs, or hand off from an agent with `sentinel watch &lt;pr&gt;`.</text>}>
-              <For each={shownPrs()}>
-                {(pr, i) => (
-                  <>
-                    <Show when={i() === 0 || prGroup(shownPrs()[i() - 1]!.id) !== prGroup(pr.id)}>
-                      <text fg={theme().info} flexShrink={0} marginTop={i() === 0 ? 0 : 1}>
-                        <b>{prGroup(pr.id)}</b>
-                      </text>
-                    </Show>
-                    <box flexDirection="row" flexShrink={0} backgroundColor={i() === sel() && !ticketFocus() ? theme().selectionBackground : undefined}>
-                    <text>
-                      {pad(`  ${prLine(pr)}`, widths().pr)} {pad(pr.agent, widths().agent)}{" "}
-                      {pad(pr.session_id.slice(0, 8) + (pr.session?.paused ? " ⏸" : ""), widths().session)}{" "}
-                      {pad(ago(pr.last_checked_at), widths().checked)}{" "}
-                    </text>
-                    <text fg={(pr.humanOpen ?? 0) > 0 ? theme().warning : theme().textMuted}>
-                      {pad((pr.humanOpen ?? 0) > 0 ? `${pr.humanOpen} open` : "-", widths().human)}{" "}
-                    </text>
-                    <text fg={pr.mergeable === "CONFLICTING" ? theme().error : theme().textMuted}>
-                      {pad(mergeLabel(pr), widths().merge)}{" "}
-                    </text>
-                    <text fg={statusColor(theme(), pr.last_status)}>{pad(pr.last_status, widths().status)} </text>
-                    <text fg={theme().textSecondary}>{pad((pr.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
-                    </box>
-                  </>
-                )}
-              </For>
-            </Show>
-          </box>
-          <Show when={showTickets()}>
-            <box
-              flexDirection="column"
-              border
-              borderColor={ticketFocus() ? theme().accent : undefined}
-              title={` Jira tickets · label "${status()?.jira?.label ?? ""}" `}
-              flexShrink={0}
-              paddingLeft={1}
-              paddingRight={1}
-            >
-              <Show when={status()?.jira?.error}>
-                <text fg={theme().error}>Jira poll failed: {status()!.jira.error}</text>
-              </Show>
-              <Show
-                when={tickets().length > 0}
-                fallback={<text fg={theme().textMuted}>No tickets picked up yet. Assign yourself a ticket and add the label to start an agent on it.</text>}
-              >
-                <For each={ticketWindow()}>
-                  {(t) => (
-                    <box flexDirection="row" flexShrink={0} backgroundColor={ticketFocus() && t === currentTicket() ? theme().selectionBackground : undefined}>
-                      <text>
-                        {pad(`${t.key} - ${t.summary ?? ""}`, widths().pr)} {pad("claude", widths().agent)}{" "}
-                        {pad(t.session_id.slice(0, 8) + (t.session?.paused ? " ⏸" : ""), widths().session)}{" "}
-                        {pad(ago(t.picked_at), widths().checked)}{" "}
-                        {pad("", widths().human)}{" "}
-                      </text>
-                      <text fg={statusColor(theme(), t.last_status)}>{pad(t.last_status, widths().status)} </text>
-                      <text fg={theme().textSecondary}>{pad((t.last_reason ?? "").replace(/\s+/g, " "), widths().reason)}</text>
-                    </box>
-                  )}
-                </For>
-              </Show>
-            </box>
-          </Show>
-          </Show>
+          {sessionsView()}
           <Show when={detailsOpen()}>{sessionDetailsView()}</Show>
           <Show when={selectedSession() && !detailsOpen()}>
             <box border title=" Details " paddingLeft={1} flexDirection="column" flexShrink={0}>
@@ -1842,7 +1642,7 @@ export function App(props: AppProps) {
               </text>
             </box>
           </Show>
-          <Show when={!ticketFocus() && current() && !detailsOpen()}>
+          <Show when={current() && !detailsOpen()}>
             <box border title=" Details " paddingLeft={1} flexDirection="column" flexShrink={0}>
               <text>
                 {current()!.url} · session {current()!.session_id}
