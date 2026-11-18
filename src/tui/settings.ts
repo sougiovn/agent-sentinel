@@ -1,7 +1,8 @@
 import { ROUTINE_OVERLAP_MODES, ROUTINE_SESSION_MODES, TICKET_MODES, type Config } from "../core/config.ts";
 import { NOTIFY_EVENT_LABELS, NOTIFY_EVENTS, NOTIFY_METHODS } from "../notify/notifier.ts";
 
-export type FieldKind = "enum" | "int" | "number" | "string" | "list" | "template";
+/** `action`: not a config value; enter runs something (the TUI decides what, by key). */
+export type FieldKind = "enum" | "int" | "number" | "string" | "list" | "template" | "action";
 
 export interface Field {
   key: string;
@@ -62,6 +63,7 @@ export const FIELDS: Field[] = [
       bool(`notifications.events.${e}`, NOTIFY_EVENT_LABELS[e], (c) => c.notifications.events[e], (c, v) => (c.notifications.events[e] = v)),
     ),
   ]),
+  ...under("General", "Setup", [f("setup.trustPrompts", "Trust prompts folder", "action", () => "", () => {})]),
   ...under("Pull requests", "Feedback", [
     f("ignoredAuthors", "Ignored authors", "list", (c) => c.ignoredAuthors, (c, v) => (c.ignoredAuthors = v)),
     f("failingConclusions", "Failing conclusions", "list", (c) => c.failingConclusions, (c, v) => (c.failingConclusions = v)),
@@ -139,6 +141,7 @@ export function settingsRows(fields: Field[]): SettingsRow[] {
 }
 
 export function displayValue(field: Field, c: Config): string {
+  if (field.kind === "action") return "enter: set up";
   const v = field.get(c);
   if (field.kind === "list") return (v as string[]).join(", ") || "(none)";
   if (field.kind === "template") {

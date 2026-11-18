@@ -1066,3 +1066,80 @@ test("TUI routines view lists routines, runs one now, and shows its session in t
   expect(f).toContain("⏱ morning-digest");
   t.renderer.destroy();
 });
+
+test("TUI first run offers to trust the prompts folder: y opens Claude there, esc dismisses for good, Settings reopens it", async () => {
+  const t0 = makeDaemon();
+  const claudeDir = mkdtempSync(join(tmpdir(), "claude-untrusted-"));
+  const claudeConfigFile = join(claudeDir, ".claude.json");
+  writeFileSync(claudeConfigFile, JSON.stringify({ projects: {} }));
+  const client: RpcClient = { call: (m, p) => t0.daemon.handle(m, p) };
+  const open = async () => {
+    const t = await testRender(() => <App paths={t0.paths} autoStart={false} client={client} claudeConfigFile={claudeConfigFile} />, { width: 140, height: 40 });
+    const frame = async () => {
+      await Bun.sleep(120);
+      await t.renderOnce();
+      return t.captureCharFrame();
+    };
+    return { t, frame };
+  };
+
+  let { t, frame } = await open();
+  let f = await frame();
+  expect(f).toContain("Trust Sentinel's prompts folder");
+  expect(f).toContain("doesn't trust this folder yet");
+  t.mockInput.pressKey("s"); // other keys don't reach the screen underneath
+  f = await frame();
+  expect(f).not.toContain("Multiplexer");
+
+  t.mockInput.pressKey("y");
+  f = await frame();
+  expect(f).not.toContain("Trust Sentinel's prompts folder");
+  expect(f).toContain("Opened Claude in");
+  const pane = [...t0.mux.panes.values()].at(-1)!;
+  expect(pane.opts).toMatchObject({ label: "sentinel-trust", cwd: t0.paths.promptsDir });
+  expect(pane.lines).toEqual(["'claude'"]);
+  t.renderer.destroy();
+
+  // Not dismissed, so it shows again on the next start.
+  ({ t, frame } = await open());
+  expect(await frame()).toContain("Trust Sentinel's prompts folder");
+  t.mockInput.pressEscape();
+  f = await frame();
+  expect(f).not.toContain("Trust Sentinel's prompts folder");
+  expect(f).toContain("Settings › General › Setup");
+  t.renderer.destroy();
+
+  // Dismissed: not shown on start, but Settings › General › Setup brings it back.
+  ({ t, frame } = await open());
+  expect(await frame()).not.toContain("Trust Sentinel's prompts folder");
+  t.mockInput.pressKey("s");
+  await frame();
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("trust");
+  await frame();
+  t.mockInput.pressEnter(); // leave the filter
+  f = await frame();
+  expect(f).toContain("Trust prompts folder");
+  expect(f).toContain("not trusted · enter: set up");
+  t.mockInput.pressEnter();
+  expect(await frame()).toContain("Trust Sentinel's prompts folder");
+  t.mockInput.pressEscape();
+  f = await frame();
+  expect(f).not.toContain("Trust Sentinel's prompts folder");
+  expect(f).toContain("Trust prompts folder"); // back on the settings dialog
+
+  // Once Claude Code trusts the folder, Settings says so.
+  writeFileSync(claudeConfigFile, JSON.stringify({ projects: { [t0.paths.home]: { hasTrustDialogAccepted: true } } }));
+  t.mockInput.pressKey("q");
+  await frame();
+  t.mockInput.pressKey("s");
+  f = await frame();
+  t.mockInput.pressKey("/");
+  await frame();
+  await t.mockInput.typeText("trust");
+  f = await frame();
+  expect(f).toContain("trusted · enter: set up");
+  expect(f).not.toContain("not trusted");
+  t.renderer.destroy();
+});

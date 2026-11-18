@@ -148,8 +148,8 @@ export interface RefreshResult {
   nextPollAt: number | null;
 }
 
-/** What `openTool` opens in a new multiplexer tab. */
-export type OpenTool = "dashboard" | "settings";
+/** What `openTool` opens in a new multiplexer tab. `trust-prompts`: Claude in the prompts folder, so the user can trust it. */
+export type OpenTool = "dashboard" | "settings" | "trust-prompts";
 
 /** method name → [params, result] */
 export interface RpcMethods {

@@ -18,6 +18,8 @@ Jira tickets also need the [Atlassian CLI](https://developer.atlassian.com/cloud
 
 If you run Claude Code with its sandbox on, add `~/.config/sentinel/sentinel.sock` to `sandbox.network.allowUnixSockets` in `~/.claude/settings.json`, or `sentinel watch` from your own sessions can't reach the daemon. Sessions Sentinel launches get this allowance automatically.
 
+Sentinel starts Claude with `--add-dir ~/.config/sentinel/prompts`. Until Claude Code trusts that folder, every session Sentinel starts stops at a trust question and waits. The first time you open the dashboard, it offers to fix this: press `y` and it opens Claude in that folder, where you answer yes once and quit with `/exit`. If you skip it, it's under Settings › General › Setup.
+
 ## Usage
 
 ```sh
@@ -148,6 +150,7 @@ If the multiplexer can't be reached, the PR shows `spawn_failed` and its items a
 | `prompts/` | Fix prompts delivered to agents (pruned after 7 days) |
 | `hooks/claude-settings.json` | Settings passed to Claude sessions Sentinel launches: state hooks, and the daemon socket in the sandbox allowlist |
 | `eval/` | Evaluator working directory |
+| `setup.json` | First-run answers, such as a dismissed prompts-folder trust alert |
 
 ## Config
 

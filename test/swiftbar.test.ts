@@ -220,6 +220,14 @@ describe("open tool", () => {
     expect(line).toEndWith(" reload");
   });
 
+  test("opens Claude in the prompts folder so the user can trust it", async () => {
+    const d = makeDaemon();
+    const r = await d.daemon.handle("openTool", { tool: "trust-prompts" });
+    const pane = d.mux.panes.get(r.paneId)!;
+    expect(pane.opts).toMatchObject({ ownTab: true, focus: true, label: "sentinel-trust", cwd: d.paths.promptsDir });
+    expect(pane.lines).toEqual(["'claude'"]);
+  });
+
   test("reuses the home session and reports an unreachable multiplexer", async () => {
     const d = makeDaemon();
     d.gh.add(parsePrRef("acme/web#1"));

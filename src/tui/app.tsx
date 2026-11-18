@@ -45,6 +45,7 @@ import { filterRepos, repoLabel, tilde, worktreeLabel } from "./repo-labels.ts";
 import { filterHints, fitHints, HELP_HINT, hintText, type Hint } from "./shortcuts.ts";
 import { cycleEnum, displayValue, editText, FIELDS, filterFields, fullLabel, parseValue, SECTIONS, settingsRows, type Field, type SettingsRow } from "./settings.ts";
 import { DEFAULT_THEME, loadTheme, statusColor, watchTheme, type DirWatcher, type Theme } from "./theme.ts";
+import { dismissTrustAlert, isDirTrusted, trustAlertDismissed } from "../core/claude-trust.ts";
 
 type View = "list" | "history" | "settings" | "pick-pr" | "new-watch" | "repos" | "routines";
 
@@ -102,6 +103,8 @@ export interface AppProps {
   copy?: (text: string) => void;
   /** Override the event source for theme file changes (tests). */
   watchThemeDir?: DirWatcher;
+  /** Override Claude Code's state file, read to tell whether the prompts folder is trusted (tests). */
+  claudeConfigFile?: string;
 }
 
 export function App(props: AppProps) {
@@ -406,6 +409,39 @@ export function App(props: AppProps) {
   const interval = setInterval(refresh, 2000);
   onCleanup(() => clearInterval(interval));
 
+  /*
+   * Sentinel starts Claude with `--add-dir <prompts folder>`. Until the user trusts that folder,
+   * Claude Code asks about it at the start of every session and the session waits, so the
+   * first run offers to open Claude there once.
+   */
+  const [promptsTrusted, setPromptsTrusted] = createSignal(false);
+  const [trustAlert, setTrustAlert] = createSignal(false);
+  const checkTrust = () => setPromptsTrusted(isDirTrusted(props.paths.promptsDir, props.claudeConfigFile));
+  checkTrust();
+  if (!promptsTrusted() && !trustAlertDismissed(props.paths.setup)) setTrustAlert(true);
+
+  const openTrustSession = async () => {
+    setTrustAlert(false);
+    if (!online()) {
+      notify("The daemon is not running. Start it (S), then run Settings › General › Setup again", true);
+      return;
+    }
+    try {
+      await client.call("openTool", { tool: "trust-prompts" }, 30_000);
+      notify(`Opened Claude in ${tilde(props.paths.promptsDir)}: trust the folder, then quit it with /exit`);
+    } catch (e) {
+      notify(`Could not open Claude: ${(e as Error).message}`, true);
+    }
+  };
+
+  const dismissTrust = () => {
+    setTrustAlert(false);
+    try {
+      dismissTrustAlert(props.paths.setup);
+    } catch {}
+    if (!promptsTrusted()) notify("Set it up any time from Settings › General › Setup");
+  };
+
   const current = () => {
     const l = currentLine();
     return l?.kind === "pr" ? l.pr : undefined;
@@ -625,6 +661,12 @@ export function App(props: AppProps) {
   useKeyboard(async (key) => {
     if (key.ctrl && key.name === "c") {
       renderer.destroy();
+      return;
+    }
+    if (trustAlert()) {
+      key.preventDefault();
+      if (key.name === "y") await openTrustSession();
+      else if (key.name === "escape" || key.name === "n") dismissTrust();
       return;
     }
     // Handled before any focused input sees the key, so `?` works while typing a filter too.
@@ -885,6 +927,7 @@ export function App(props: AppProps) {
             return;
           }
           readConfig();
+          checkTrust();
           setSettingsQuery("");
           setSettingsFiltering(false);
           setSettingsTab(0);
@@ -1147,6 +1190,11 @@ export function App(props: AppProps) {
           return;
         case "return":
         case "space":
+          if (field?.kind === "action") {
+            checkTrust();
+            setTrustAlert(true);
+            return;
+          }
           if (!cfg || !field) return;
           if (field.kind === "enum") await persist((c) => field.set(c, cycleEnum(field, c)));
           else if (field.kind === "template") await editTemplate();
@@ -1448,7 +1496,15 @@ export function App(props: AppProps) {
         <Show
           when={editing() !== null && selected()}
           fallback={
-            <Show when={field.kind === "enum"} fallback={<text>{pad(displayValue(field, config()!), modalWidth() - SETTINGS_LABEL_WIDTH - 5)}</text>}>
+            <Show
+              when={field.kind === "enum"}
+              fallback={
+                <Show when={field.kind === "action"} fallback={<text>{pad(displayValue(field, config()!), modalWidth() - SETTINGS_LABEL_WIDTH - 5)}</text>}>
+                  <text fg={promptsTrusted() ? theme().success : theme().warning}>{promptsTrusted() ? "trusted" : "not trusted"}</text>
+                  <text fg={theme().textMuted}>{` · ${displayValue(field, config()!)}`}</text>
+                </Show>
+              }
+            >
               <For each={field.options ?? []}>
                 {(opt) => (
                   <text
@@ -1590,6 +1646,8 @@ export function App(props: AppProps) {
    * `?` dialog lists them all. `prompt` replaces the footer hints while a confirmation is pending.
    */
   const shortcuts = (): { title: string; hints: Hint[]; prompt?: string } => {
+    if (trustAlert())
+      return { title: "Trust prompts folder", hints: [hint("y", "open Claude there"), hint("esc", "not now")] };
     if (editing() !== null || formEditing() !== null)
       return { title: "Editing a value", hints: [hint("enter", "save"), hint("esc", "cancel")] };
     if (confirmDelete())
@@ -2160,6 +2218,30 @@ export function App(props: AppProps) {
               </box>
             </Match>
           </Switch>
+        </box>
+      </Show>
+
+      <Show when={trustAlert()}>
+        <box position="absolute" top={0} left={0} width="100%" height="100%" zIndex={15} alignItems="center" justifyContent="center">
+          <box flexDirection="column" border borderColor={theme().info} title=" Trust Sentinel's prompts folder " backgroundColor={theme().modalBackground} width={modalWidth()} paddingLeft={1} paddingRight={1}>
+            <text>Sentinel gives the Claude sessions it starts access to its prompts folder, {tilde(props.paths.promptsDir)}, where it writes their instructions.</text>
+            <text marginTop={1}>
+              Until you trust that folder, Claude Code asks about it each time Sentinel starts a session, and the session waits there for your answer. Trust it once and Claude Code remembers.
+            </text>
+            <text marginTop={1} fg={promptsTrusted() ? theme().success : theme().warning}>
+              {promptsTrusted() ? "Claude Code already trusts this folder." : "Claude Code doesn't trust this folder yet."}
+            </text>
+            <box flexDirection="column" marginTop={1}>
+              <box flexDirection="row">
+                <text fg={theme().accent}>{pad("y", 5)}</text>
+                <text>Open Claude in the folder in a new tab. Answer yes to trust it, then quit with /exit.</text>
+              </box>
+              <box flexDirection="row">
+                <text fg={theme().accent}>{pad("esc", 5)}</text>
+                <text>Not now. You can do this later from Settings › General › Setup.</text>
+              </box>
+            </box>
+          </box>
         </box>
       </Show>
 

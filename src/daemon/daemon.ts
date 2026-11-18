@@ -312,8 +312,8 @@ export class Daemon {
   }
 
   /**
-   * Opens the dashboard, or config.json in the user's editor followed by a reload, in a new tab of
-   * Sentinel's home session. The command runs in the pane's login shell, so $VISUAL/$EDITOR are the user's.
+   * Opens the dashboard, config.json in the user's editor followed by a reload, or Claude in the
+   * prompts folder (for the user to trust it) in a new tab of Sentinel's home session. The command runs in the pane's login shell, so $VISUAL/$EDITOR are the user's.
    */
   async openTool(tool: OpenTool): Promise<OpenCommandResult> {
     const self = `SENTINEL_HOME=${sq(this.paths.home)} ${selfCommand().map(sq).join(" ")}`;
@@ -326,6 +326,9 @@ export class Daemon {
         cwd: home,
         command: `${editor} ${sq(this.paths.config)} && ${self} reload`,
       });
+    }
+    if (tool === "trust-prompts") {
+      return this.dispatcher.openCommand({ label: "sentinel-trust", cwd: this.paths.promptsDir, command: sq(this.config.agents.claude.command) });
     }
     throw new Error(`Unknown tool "${String(tool)}"`);
   }

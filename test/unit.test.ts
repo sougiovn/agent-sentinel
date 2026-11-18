@@ -17,6 +17,7 @@ import { getPaths } from "../src/core/paths.ts";
 import { cycleEnum, FIELDS, filterFields, fullLabel, parseValue, SECTIONS, settingsRows } from "../src/tui/settings.ts";
 import { DEFAULT_THEME, loadTheme, parseTheme, saveTheme, statusColor } from "../src/tui/theme.ts";
 import { fakeGit } from "./fakes.ts";
+import { claudeConfigFile, dismissTrustAlert, isDirTrusted, trustAlertDismissed } from "../src/core/claude-trust.ts";
 import type { Exec } from "../src/core/exec.ts";
 import { Store } from "../src/core/db.ts";
 import { RexMux } from "../src/mux/rex.ts";
@@ -223,6 +224,37 @@ describe("launcher", () => {
     expect(launchCommand({ agent: "claude", sessionId: "s", cwd: "/w", promptFile: "/p.md" }, defaultConfig(), home, ["/bin/sentinel"])).toContain(
       `--settings '${join(home.hooksDir, "claude-settings.json")}'`,
     );
+  });
+});
+
+describe("claude trust", () => {
+  const file = (projects: Record<string, unknown>) => {
+    const f = join(mkdtempSync(join(tmpdir(), "trust-")), ".claude.json");
+    writeFileSync(f, JSON.stringify({ projects }));
+    return f;
+  };
+  test("a directory is trusted when it or an ancestor accepted the trust dialog", () => {
+    const f = file({ "/h": { hasTrustDialogAccepted: false }, "/h/.config/sentinel": { hasTrustDialogAccepted: true } });
+    expect(isDirTrusted("/h/.config/sentinel/prompts", f)).toBe(true);
+    expect(isDirTrusted("/h/.config/sentinel", f)).toBe(true);
+    expect(isDirTrusted("/h/.config", f)).toBe(false);
+    expect(isDirTrusted("/elsewhere", f)).toBe(false);
+  });
+  test("a missing or broken state file means not trusted", () => {
+    expect(isDirTrusted("/h", "/does/not/exist.json")).toBe(false);
+    const f = join(mkdtempSync(join(tmpdir(), "trust-")), ".claude.json");
+    writeFileSync(f, "{oops");
+    expect(isDirTrusted("/h", f)).toBe(false);
+  });
+  test("CLAUDE_CONFIG_DIR moves Claude Code's state file", () => {
+    expect(claudeConfigFile({ CLAUDE_CONFIG_DIR: "/c" })).toBe("/c/.claude.json");
+    expect(claudeConfigFile({})).toEndWith("/.claude.json");
+  });
+  test("dismissing the alert is remembered", () => {
+    const f = join(mkdtempSync(join(tmpdir(), "setup-")), "setup.json");
+    expect(trustAlertDismissed(f)).toBe(false);
+    dismissTrustAlert(f);
+    expect(trustAlertDismissed(f)).toBe(true);
   });
 });
 

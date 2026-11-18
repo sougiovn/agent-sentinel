@@ -15,6 +15,8 @@ export interface Paths {
   hooksDir: string;
   /** One directory per routine, each holding a ROUTINE.md. */
   routinesDir: string;
+  /** First-run setup answers, such as a dismissed setup alert. */
+  setup: string;
 }
 
 export function sentinelHome(env: Record<string, string | undefined> = process.env): string {
@@ -34,6 +36,7 @@ export function getPaths(home = sentinelHome()): Paths {
     promptsDir: join(home, "prompts"),
     hooksDir: join(home, "hooks"),
     routinesDir: join(home, "routines"),
+    setup: join(home, "setup.json"),
   };
 }
 
