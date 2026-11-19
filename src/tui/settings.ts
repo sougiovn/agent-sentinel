@@ -39,6 +39,7 @@ const under = (section: string, group: string | undefined, specs: Spec[]): Field
 
 export const FIELDS: Field[] = [
   ...under("General", undefined, [
+    f("setup.trustPrompts", "Trust prompts folder", "action", () => "", () => {}),
     f("multiplexer", "Multiplexer", "enum", (c) => c.multiplexer, (c, v) => (c.multiplexer = v), ["rex", "herdr"]),
     f("pollIntervalSec", "Poll interval (s)", "int", (c) => c.pollIntervalSec, (c, v) => (c.pollIntervalSec = v)),
   ]),
@@ -63,7 +64,6 @@ export const FIELDS: Field[] = [
       bool(`notifications.events.${e}`, NOTIFY_EVENT_LABELS[e], (c) => c.notifications.events[e], (c, v) => (c.notifications.events[e] = v)),
     ),
   ]),
-  ...under("General", "Setup", [f("setup.trustPrompts", "Trust prompts folder", "action", () => "", () => {})]),
   ...under("Pull requests", "Feedback", [
     f("ignoredAuthors", "Ignored authors", "list", (c) => c.ignoredAuthors, (c, v) => (c.ignoredAuthors = v)),
     f("failingConclusions", "Failing conclusions", "list", (c) => c.failingConclusions, (c, v) => (c.failingConclusions = v)),

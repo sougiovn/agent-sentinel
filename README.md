@@ -18,7 +18,7 @@ Jira tickets also need the [Atlassian CLI](https://developer.atlassian.com/cloud
 
 If you run Claude Code with its sandbox on, add `~/.config/sentinel/sentinel.sock` to `sandbox.network.allowUnixSockets` in `~/.claude/settings.json`, or `sentinel watch` from your own sessions can't reach the daemon. Sessions Sentinel launches get this allowance automatically.
 
-Sentinel starts Claude with `--add-dir ~/.config/sentinel/prompts`. Until Claude Code trusts that folder, every session Sentinel starts stops at a trust question and waits. The first time you open the dashboard, it offers to fix this: press `y` and it opens Claude in that folder, where you answer yes once and quit with `/exit`. If you skip it, it's under Settings › General › Setup.
+Sentinel starts Claude with `--add-dir ~/.config/sentinel/prompts`. Until Claude Code trusts that folder, every session Sentinel starts stops at a trust question and waits. The first time you open the dashboard, it offers to fix this: press `y` and it opens Claude in that folder, where you answer yes once and quit with `/exit`. If you skip it, it's under Settings › General › Trust prompts folder.
 
 ## Usage
 

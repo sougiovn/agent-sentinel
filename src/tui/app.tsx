@@ -423,7 +423,7 @@ export function App(props: AppProps) {
   const openTrustSession = async () => {
     setTrustAlert(false);
     if (!online()) {
-      notify("The daemon is not running. Start it (S), then run Settings › General › Setup again", true);
+      notify("The daemon is not running. Start it (S), then run Settings › General › Trust prompts folder again", true);
       return;
     }
     try {
@@ -439,7 +439,7 @@ export function App(props: AppProps) {
     try {
       dismissTrustAlert(props.paths.setup);
     } catch {}
-    if (!promptsTrusted()) notify("Set it up any time from Settings › General › Setup");
+    if (!promptsTrusted()) notify("Set it up any time from Settings › General › Trust prompts folder");
   };
 
   const current = () => {
@@ -2238,7 +2238,7 @@ export function App(props: AppProps) {
               </box>
               <box flexDirection="row">
                 <text fg={theme().accent}>{pad("esc", 5)}</text>
-                <text>Not now. You can do this later from Settings › General › Setup.</text>
+                <text>Not now. You can do this later from Settings › General › Trust prompts folder.</text>
               </box>
             </box>
           </box>

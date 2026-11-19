@@ -28,7 +28,13 @@ test("TUI renders offline state and settings view, and saves an enum toggle", as
   expect(settings).toContain("Multiplexer");
   expect(settings).toContain("Busy timeout (min)");
   expect(settings).toContain(" General   Pull requests   Tickets ");
-  expect(settings).toContain(" rex   herdr   ←→"); // every option shown, arrows on the selected row
+  expect(settings).toContain(" rex   herdr  "); // every option shown
+  expect(settings).not.toContain(" rex   herdr   ←→"); // the trust action, first in General, is selected
+
+  t.mockInput.pressArrow("down"); // onto the multiplexer
+  await Bun.sleep(50);
+  await t.renderOnce();
+  expect(t.captureCharFrame()).toContain(" rex   herdr   ←→"); // arrows on the selected row
   expect(settings).not.toContain("Ignored authors"); // on the Pull requests tab
 
   t.mockInput.pressEnter(); // cycle multiplexer rex → herdr
@@ -770,6 +776,7 @@ test("TUI ? works on every screen: settings, a value being edited, a pending con
   await frame();
 
   // Saving shows "Saved" with ? help still at the right.
+  t.mockInput.pressArrow("down"); // past the trust action, onto the multiplexer
   t.mockInput.pressEnter(); // cycles the multiplexer
   expect(footer(await frame())).toMatch(/Saved\s+\? help\s*$/);
 
@@ -1106,10 +1113,10 @@ test("TUI first run offers to trust the prompts folder: y opens Claude there, es
   t.mockInput.pressEscape();
   f = await frame();
   expect(f).not.toContain("Trust Sentinel's prompts folder");
-  expect(f).toContain("Settings › General › Setup");
+  expect(f).toContain("Settings › General › Trust prompts folder");
   t.renderer.destroy();
 
-  // Dismissed: not shown on start, but Settings › General › Setup brings it back.
+  // Dismissed: not shown on start, but Settings › General › Trust prompts folder brings it back.
   ({ t, frame } = await open());
   expect(await frame()).not.toContain("Trust Sentinel's prompts folder");
   t.mockInput.pressKey("s");
