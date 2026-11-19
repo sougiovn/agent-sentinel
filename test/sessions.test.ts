@@ -3,6 +3,7 @@ import type { PrListEntry, TicketListEntry } from "../src/daemon/protocol.ts";
 import type { EventRow, SessionRow } from "../src/core/types.ts";
 import {
   buildSessionGroups,
+  DONE_GROUP,
   eventSummary,
   filterSessionGroups,
   formatUsd,
@@ -61,6 +62,19 @@ describe("session groups", () => {
     expect(keys("multiple")).toEqual(["s:s2", "p:github.com/acme/web#14", "p:github.com/acme/api#88"]);
     expect(keys("s5 started")).toEqual(["s:s5", "t:CP-9"]);
     expect(keys("nothing")).toEqual([]);
+  });
+
+  test("a session whose tickets are all done and whose PRs are no longer watched goes under Done, last", () => {
+    const done = (key: string, session: string) => ({ ...ticket(key, session), last_status: "done" }) as TicketListEntry;
+    const g = buildSessionGroups(
+      [pr("github.com/acme/web#12", "s1")],
+      [done("CP-1", "s1"), done("CP-2", "s2"), done("CP-3", "s3"), ticket("CP-4", "s3"), ticket("CP-5", "s4")],
+    );
+    expect(g.map((x) => [x.title, x.sessions.map((s) => s.sessionId)])).toEqual([
+      ["acme/web", ["s1"]], // a watched PR still decides the group
+      [NO_PR_GROUP, ["s3", "s4"]], // s3 still has a ticket in progress
+      [DONE_GROUP, ["s2"]],
+    ]);
   });
 
   test("session state", () => {

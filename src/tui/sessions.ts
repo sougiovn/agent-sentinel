@@ -5,6 +5,7 @@ import type { PrListEntry, RoutineListEntry, TicketListEntry } from "../daemon/p
 export const MULTI_REPO_GROUP = "Multiple repositories";
 export const NO_PR_GROUP = "No PR yet";
 export const ROUTINES_GROUP = "Routines";
+export const DONE_GROUP = "Done";
 
 /** An agent session with the PRs, tickets and routines it works on. */
 export interface SessionEntry {
@@ -19,7 +20,7 @@ export interface SessionEntry {
 }
 
 export interface SessionGroup {
-  /** `owner/repo`, {@link MULTI_REPO_GROUP}, {@link NO_PR_GROUP} or {@link ROUTINES_GROUP}. */
+  /** `owner/repo`, {@link MULTI_REPO_GROUP}, {@link NO_PR_GROUP}, {@link ROUTINES_GROUP} or {@link DONE_GROUP}. */
   title: string;
   sessions: SessionEntry[];
 }
@@ -33,11 +34,14 @@ export type SessionLine =
 
 /**
  * The repo a session belongs under: its PRs' repo, or a special group when they span repos, when it only
- * runs routines, or when it has no PR yet.
+ * runs routines, when every ticket it has is done (its merged PR is no longer watched), or when it has no PR yet.
  */
 export function sessionGroup(entry: SessionEntry): string {
   const repos = new Set(entry.prs.map((p) => prGroup(p.id)));
-  if (repos.size === 0) return entry.routines.length && !entry.tickets.length ? ROUTINES_GROUP : NO_PR_GROUP;
+  if (repos.size === 0) {
+    if (!entry.tickets.length) return entry.routines.length ? ROUTINES_GROUP : NO_PR_GROUP;
+    return entry.tickets.every((t) => t.last_status === "done") ? DONE_GROUP : NO_PR_GROUP;
+  }
   return repos.size === 1 ? [...repos][0]! : MULTI_REPO_GROUP;
 }
 
@@ -75,7 +79,7 @@ export function buildSessionGroups(prs: PrListEntry[], tickets: TicketListEntry[
     if (!groups.has(title)) groups.set(title, { title, sessions: [] });
     groups.get(title)!.sessions.push(e);
   }
-  const rank = (t: string) => (t === ROUTINES_GROUP ? 3 : t === NO_PR_GROUP ? 2 : t === MULTI_REPO_GROUP ? 1 : 0);
+  const rank = (t: string) => (t === DONE_GROUP ? 4 : t === ROUTINES_GROUP ? 3 : t === NO_PR_GROUP ? 2 : t === MULTI_REPO_GROUP ? 1 : 0);
   const sorted = [...groups.values()].sort((a, b) => rank(a.title) - rank(b.title) || a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
   for (const g of sorted) g.sessions.sort((a, b) => since(a) - since(b) || a.sessionId.localeCompare(b.sessionId));
   return sorted;
